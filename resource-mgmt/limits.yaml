@@ -1,0 +1,93 @@
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: limits                         # LimitRange 名稱
+  namespace: default                   # 只作用於此 Namespace
+  labels:
+    app: resource-management
+
+spec:
+  limits:                              # 可以同時設定 Container、Pod、PVC 三種限制
+    # ==========================================================
+    # 1. Container：單一 Container 的資源限制（CKAD 重點）
+    # ==========================================================
+    - type: Container                  # 可選：Container / Pod / PersistentVolumeClaim
+      default:                         # 沒有設定 limits 時，自動補入預設值（僅 Container）
+        cpu: 500m                      # CPU Limit：0.5 Core
+        memory: 512Mi                  # Memory Limit：512 MiB
+      defaultRequest:                  # 沒有設定 requests 時，自動補入預設值（僅 Container）
+        cpu: 200m                      # CPU Request：0.2 Core
+        memory: 256Mi                  # Memory Request：256 MiB
+      max:                             # Container 的 requests / limits 不可超過對應上限
+        cpu: "1"                       # CPU 上限：1 Core
+        memory: 1Gi                    # Memory 上限：1 GiB
+      min:                             # Container 的 requests / limits 不可低於對應下限
+        cpu: 100m                      # CPU 下限：0.1 Core
+        memory: 128Mi                  # Memory 下限：128 MiB
+      maxLimitRequestRatio:            # limits / requests 的最大比例
+        cpu: "5"                       # CPU Limit 不得超過 Request 的 5 倍
+        memory: "4"                    # Memory Limit 不得超過 Request 的 4 倍
+
+    # ==========================================================
+    # 2. Pod：整個 Pod 的資源限制
+    # ==========================================================
+    - type: Pod                        # 對整個 Pod 的 Container 資源合計套用限制
+      max:                             # Pod 整體資源上限
+        cpu: "4"
+        memory: 4Gi
+      min:                             # Pod 整體資源下限
+        cpu: 200m
+        memory: 256Mi
+      maxLimitRequestRatio:            # Pod 整體 Limit / Request 比例上限
+        cpu: "5"
+        memory: "4"
+      # Pod 類型不支援 default / defaultRequest
+
+    # ==========================================================
+    # 3. PersistentVolumeClaim：單一 PVC 的申請容量限制
+    # ==========================================================
+    - type: PersistentVolumeClaim      # 限制單一 PVC 的 storage request
+      max:
+        storage: 10Gi                  # PVC 最多申請 10Gi
+      min:
+        storage: 1Gi                   # PVC 至少申請 1Gi
+      # PVC 類型不支援 default / defaultRequest
+
+# ============================================================
+# CKAD 考試重點
+# ============================================================
+# 1. LimitRange vs ResourceQuota
+#   - LimitRange：限制 Namespace 內「單一」Container / Pod / PVC 的資源設定。
+#   - ResourceQuota：限制「整個 Namespace」的資源總額與物件數量。
+#   - LimitRange 可自動補入 Container 預設 Requests / Limits；ResourceQuota 不會。
+#   - 兩者可同時生效；符合 LimitRange 仍可能因 Quota 不足而建立失敗。
+#
+# 2. 三種 type 與可用欄位
+#   - Container：default、defaultRequest、max、min、maxLimitRequestRatio。
+#   - Pod：max、min、maxLimitRequestRatio；沒有 default / defaultRequest。
+#   - PersistentVolumeClaim：max、min（storage）；沒有 default / defaultRequest。
+#   - max / min 是驗證限制，不會自動將使用者設定裁切到範圍內。
+#   - 若 Container 未設定 Request、但已設定 Limit，Request 可能預設等於 Limit；
+#     LimitRange 的 defaultRequest 與其他 Admission 預設行為需一併考慮。
+#   - 設定 LimitRange 不會回頭修改已存在的 Pod。
+#   - 同 Namespace 多個 LimitRange 的預設值選用可能不具決定性。
+#
+# 3. Quantity 單位
+#   - cpu: "1" = 1 Core；500m = 0.5 Core；100m = 0.1 Core。
+#   - memory: 1Gi = 1024Mi；Mi / Gi 為二進位容量單位。
+#   - ephemeral-storage 也可納入 Container 的 default/defaultRequest/max/min；
+#     例如 default: {ephemeral-storage: 1Gi}，但此處不重複宣告 Container 規則。
+#
+# 4. 常用 kubectl 指令
+#   - k get limitrange -A                   # 查看所有 Namespace 的 LimitRange
+#   - k describe limitrange <NAME>         # 查看生效限制與預設值
+#   - k get limitrange <NAME> -o yaml      # 查看完整 YAML
+#   - k apply -f limitrange.yaml           # 建立或更新
+#   - k explain limitrange.spec.limits     # 查看可設定欄位
+#   - k get resourcequota                  # 對照 Namespace 總額限制
+#
+# 5. 常見故障排查
+#   - Pod / PVC 建立時 Forbidden → 檢查 min、max、maxLimitRequestRatio 與 ResourceQuota。
+#   - Pod 沒寫 resources 卻出現預設值 → 檢查該 Namespace 的 LimitRange。
+#   - 修改 LimitRange 後舊 Pod 不變 → 預設值只在建立時注入。
+#   - LimitRange 不保證 Node 有足夠資源；Pod Pending 仍需查 Scheduler Events。

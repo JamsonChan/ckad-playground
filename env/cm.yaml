@@ -1,0 +1,82 @@
+apiVersion: v1                       # ConfigMap 屬於 Core API Group
+kind: ConfigMap                     # 儲存非機密設定；Namespace 層級資源
+metadata:
+  name: my-config                   # ConfigMap 名稱，Pod 引用時使用
+  namespace: default                # 必須與引用它的 Pod 位於相同 Namespace
+  labels:                           # 自訂標籤，用於分類與查詢
+    app: myapp
+
+# ============================================================
+# 1. data：一般文字設定（重要）
+# ============================================================
+data:                                # Key → 字串 Value；不可直接寫 YAML 數字或布林值
+  USER: "jamson"                    # 可由 env.valueFrom.configMapKeyRef 讀取
+  APP_ENV: "production"             # 可由 envFrom.configMapRef 一次載入
+  LOG_LEVEL: "debug"                # Key 區分大小寫
+  PORT: "8080"                      # 數字也要加引號，確保為字串
+  DEBUG: "true"                     # 布林值也要加引號
+
+  app.properties: |                  # | 保留換行；適合完整設定檔
+    server.port=8080
+    app.name=myapp
+    logging.level=INFO
+
+  config.yaml: |                     # Key 可當成 Volume 掛載後的檔名
+    server:
+      host: 0.0.0.0
+      port: 8080
+    logging:
+      level: info
+
+# ============================================================
+# 2. binaryData：二進位資料（認識即可）
+# ============================================================
+binaryData:                          # Value 為 Base64 字串，API Server 會解碼
+  file.bin: "SGVsbG8="             # Base64 解碼後為 Hello；Key 不得與 data 重複
+
+# ============================================================
+# 3. immutable：是否禁止修改設定（可能考）
+# ============================================================
+immutable: false                    # false（預設）：可修改 data / binaryData
+                                    # true：禁止修改 data / binaryData，且不能改回 false
+                                    # 需要更換內容時，通常改用新名稱的 ConfigMap
+
+# ============================================================
+# CKAD 考試重點（僅保留 ConfigMap 專屬觀念）
+# ============================================================
+# 1. 引用方式（完整 Pod Schema 請參考 Pod.yaml）
+#   env[].valueFrom.configMapKeyRef：讀取指定 Key 作為環境變數
+#   envFrom[].configMapRef：將 ConfigMap 的所有可用 Key 載入環境變數
+#   volumes[].configMap：掛載成檔案；預設 Key 是檔名、Value 是內容
+#   volumes[].configMap.items：挑選 Key，並可透過 path 改變檔名
+#   volumes[].configMap.defaultMode：檔案權限，例如 0400（八進位）
+#   configMapKeyRef.optional / configMap.optional：true 表示允許缺少引用對象
+#   ConfigMap 不是 Secret，不應存放密碼、Token 等機密資訊
+#
+# 2. 更新行為（很重要）
+#   環境變數：既有 Container 不會自動更新，通常需重建 Pod
+#   一般 Volume：檔案內容會在一段延遲後更新，並非即時
+#   subPath 掛載：不會隨 ConfigMap 更新而自動更新
+#   掛載至已有檔案的目錄：原本目錄內容會被遮蔽
+#   immutable=true：無法修改 data/binaryData；刪除重建後既有 Pod 可能也要重建
+#
+# 3. 常用 kubectl 指令
+#   k create cm my-config --from-literal=USER=jamson            # 從 Key=Value 建立
+#   k create cm my-config --from-literal=A=1 --from-literal=B=2 # 一次多組
+#   k create cm my-config --from-file=app.properties            # Key 預設為檔名
+#   k create cm my-config --from-file=app.properties=./app.txt   # 自訂 Key=檔案路徑
+#   k create cm my-config --from-file=./config/                 # 從目錄內檔案建立
+#   k create cm my-config --from-env-file=app.env               # 從 KEY=VALUE 檔建立
+#   k create cm my-config --from-literal=A=1 --dry-run=client -o yaml > cm.yaml
+#   k get cm my-config -o yaml                                 # 查看完整設定
+#   k describe cm my-config                                    # 查看 Key 與 Events 等資訊
+#   k edit cm my-config                                        # 編輯（immutable=true 不可改 data）
+#   k delete cm my-config                                      # 刪除 ConfigMap
+#
+# 4. 常見故障排查
+#   CreateContainerConfigError：檢查環境變數引用的 ConfigMap / Key 是否存在
+#   FailedMount：檢查 Volume 引用名稱、Namespace 與掛載事件
+#   環境變數沒變：更新 ConfigMap 後，需重建 Pod 才會取得新值
+#   掛載檔案沒變：檢查是否使用 subPath，或等待同步延遲
+#   編輯失敗：檢查 immutable 是否為 true
+#   envFrom 有 Key 沒載入：檢查事件及環境變數名稱是否合法

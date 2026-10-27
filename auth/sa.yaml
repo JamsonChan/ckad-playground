@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-sa                         # ServiceAccount 名稱；Pod 透過此名稱引用
+  namespace: default                  # SA 是 Namespace 層級資源
+  labels:
+    app: demo                         # 可選：自訂 Label
+
+automountServiceAccountToken: false   # 是否預設自動掛載 API Token；true / false
+# imagePullSecrets:                   # 可選：拉取私有 Registry Image 的憑證 Secret
+#   - name: regcred                    # Secret 必須位於同一 Namespace
+# secrets:                            # 通常不必手動設定；不代表會自動產生長期 Token
+#   - name: existing-secret
+
+# ============================================================
+# CKAD 考試重點
+# ============================================================
+# 1. ServiceAccount (SA) 是 Pod 對 Kubernetes API 進行身分驗證的身分。
+#    - 每個 Namespace 預設有一個名為 default 的 ServiceAccount。
+#    - 未指定 SA 的 Pod 通常使用該 Namespace 的 default SA。
+#    - SA 本身不授予權限；需搭配 RoleBinding / ClusterRoleBinding 與 Role / ClusterRole。
+#    - ServiceAccount 與 User 不同：RBAC 中的 SA 身分格式為
+#      system:serviceaccount:<NAMESPACE>:<SA_NAME>。
+#
+# 2. Pod 使用 ServiceAccount（以下為 Pod 片段，不能直接貼在此 SA YAML 根層）：
+#    spec:
+#      serviceAccountName: app-sa       # SA 必須與 Pod 位於同一 Namespace
+#      automountServiceAccountToken: false  # Pod 層級設定可覆蓋 SA 的設定
+#
+# 3. API Token：
+#    - 現代 Kubernetes 通常使用 TokenRequest / projected volume 的短期 Token。
+#    - 建立 SA 不代表會自動產生可長期使用的 Token Secret。
+#    - automountServiceAccountToken: false 只關閉自動掛載，不會停用 SA 身分。
+#    - 若 Pod 需要呼叫 Kubernetes API，通常要允許掛載 Token 並配置 RBAC。
+#
+# 4. 常用指令：
+#    k create sa app-sa -n default                      # 建立 SA
+#    k get sa -A                                        # 查看所有 SA
+#    k describe sa app-sa -n default                    # 查看詳細資訊
+#    k get sa app-sa -o yaml                            # 查看 YAML
+#    k create token app-sa -n default                   # 產生 Token（避免洩漏）
+#    k set serviceaccount deployment/<NAME> app-sa      # 指定 Deployment Pod 的 SA
+#    k auth can-i get pods --as=system:serviceaccount:default:app-sa -n default
+#                                                        # 模擬 SA 的權限（需允許 impersonate）
+#
+# 5. 故障排查：
+#    - Forbidden：確認 Role/ClusterRole、Binding、subjects 與 Namespace。
+#    - serviceaccount not found：確認 Pod 與 SA 是否在同一 Namespace。
+#    - API Token 未掛載：檢查 Pod/SA 的 automountServiceAccountToken。
+#    - imagePullSecrets 用於 Registry 認證，不等於 Kubernetes API RBAC 權限。

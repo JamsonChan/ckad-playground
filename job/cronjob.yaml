@@ -1,0 +1,120 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: example-cronjob                  # CronJob 名稱
+  namespace: default                     # 所屬 Namespace
+  labels:
+    app: example-cronjob                 # CronJob 自身 Label
+
+spec:
+  # ============================================================
+  # 1. Schedule：Cron 排程
+  # ============================================================
+  schedule: "*/5 * * * *"                # 每 5 分鐘執行一次；必填，建議加引號
+  # 格式：分(0-59) 時(0-23) 日(1-31) 月(1-12) 星期(0-7，0/7=週日)
+  # *：所有值；*/5：每隔 5 單位；1-5：範圍；1,3,5：指定多個值
+  # "* * * * *"     每分鐘
+  # "0 * * * *"     每小時整點
+  # "0 8 * * *"     每天 08:00
+  # "0 8 * * 1-5"   週一至週五 08:00
+  # "0 0 1 * *"     每月 1 日 00:00
+  # "0 0 * * 0"     每週日 00:00
+  # "0 0 1 1 *"     每年 1 月 1 日 00:00
+  # @hourly / @daily / @weekly / @monthly / @yearly：常用預設排程
+  # 注意：CronJob 可能漏跑或重複執行，任務應盡量具備冪等性
+
+  # ============================================================
+  # 2. Time Zone：排程使用的時區
+  # ============================================================
+  timeZone: "Asia/Taipei"                # IANA 時區；未設定則使用 Controller 的當地時區
+  # 其他常見值："Etc/UTC"（UTC）、"Asia/Tokyo"（日本）
+  # 不要在 schedule 中使用 TZ 或 CRON_TZ；應使用 timeZone 欄位
+
+  # ============================================================
+  # 3. Concurrency Policy：同一 CronJob 的多次排程能否重疊
+  # ============================================================
+  concurrencyPolicy: Allow               # 預設 Allow
+  # Allow：允許不同排程建立的 Job 同時執行
+  # Forbid：前一次 Job 還在執行時，略過本次排程（算錯過一次）
+  # Replace：新排程觸發時，取代同一 CronJob 尚未完成的舊 Job
+  # 僅控制同一 CronJob 的 Job；不限制其他 CronJob
+  # Job 內 Pod 的並行數量由 jobTemplate.spec.parallelism 控制
+
+  # ============================================================
+  # 4. Starting Deadline：錯過排程後可延遲啟動多久
+  # ============================================================
+  startingDeadlineSeconds: 200           # 最晚允許在預定時間後 200 秒啟動
+  # 未設定：不設單次排程的補執行時間上限（仍受 Controller 規則限制）
+  # 太小（例如 <10 秒）可能因 Controller 檢查週期而錯過排程
+  # 若錯過排程次數過多（>100），Controller 可能不建立 Job
+  # Forbid 因前一個 Job 尚未完成而略過的排程，也屬於 missed schedule
+
+  # ============================================================
+  # 5. History Limits：保留已結束的 Job 數量
+  # ============================================================
+  successfulJobsHistoryLimit: 3          # 成功 Job 最多保留 3 個（預設 3）
+  failedJobsHistoryLimit: 1              # 失敗 Job 最多保留 1 個（預設 1）
+  # 0：不保留該狀態的歷史 Job；不影響仍在執行的 Job
+  # 清除歷史 Job 時，通常連同其 Pod 一起刪除
+  # Job 的 ttlSecondsAfterFinished 也可能提前清除完成的 Job
+
+  # ============================================================
+  # 6. Suspend：是否暫停建立新 Job
+  # ============================================================
+  suspend: false                         # false：正常排程（預設）；true：暫停新排程
+  # 不會停止已建立的 Job；暫停期間的排程仍可能計入 missed schedule
+  # 恢復後可能補執行錯過的排程，視 startingDeadlineSeconds 等條件而定
+  # 注意與 Job.spec.suspend 不同：後者控制「單一 Job」的執行
+
+  # ============================================================
+  # 7. Job Template：此處使用 Job Spec，不重複 Job.yaml
+  # ============================================================
+  jobTemplate:                            # JobTemplateSpec：可有 metadata 與 spec
+    spec:                                # 這一層就是 Job.spec；其餘欄位參考 Job.yaml
+      template:                          # Job.spec.template = PodTemplateSpec；參考 Pod.yaml
+        spec:
+          restartPolicy: Never           # Job Pod 只能 Never 或 OnFailure，不能 Always
+          containers:
+            - name: worker              # 最小必要 Container，避免 Kubernetes Schema Lint 報錯
+              image: busybox:1.36
+  # Job 專屬設定（completions、parallelism、backoffLimit、completionMode、
+  # activeDeadlineSeconds、ttlSecondsAfterFinished、podFailurePolicy 等）
+  # 都放在 jobTemplate.spec 下，請直接參考 Job.yaml，不在此重複。
+  # 修改 jobTemplate 只影響後續新建立的 Job，不會更新既有 Job。
+
+# ============================================================
+# CKAD 考試重點：概念、指令、排錯
+# ============================================================
+# 1. 資源關係：CronJob → Job → Pod；CronJob 按 schedule 建立 Job。
+#    jobTemplate.spec = Job.spec；jobTemplate.spec.template = PodTemplateSpec。
+#    CronJob 的 suspend 控制「是否產生新 Job」，Job 的 suspend 控制「該 Job 是否執行」。
+#
+# 2. 容易混淆：
+#    concurrencyPolicy：控制不同排程的 Job 是否能同時執行。
+#    parallelism：控制單一 Job 同時執行的 Pod 數量（在 Job.yaml）。
+#    startingDeadlineSeconds：控制錯過排程後的啟動寬限時間。
+#    activeDeadlineSeconds：控制單一 Job 的最長執行時間（在 Job.yaml）。
+#    successfulJobsHistoryLimit / failedJobsHistoryLimit：保留完成的 Job 數量。
+#    ttlSecondsAfterFinished：Job 完成後經過多少秒清除（在 Job.yaml）。
+#
+# 3. 常用指令：
+#    k create cj <NAME> --image=busybox --schedule="*/5 * * * *" -- echo hello
+#    k create cj <NAME> --image=busybox --schedule="*/5 * * * *" --dry-run=client -o yaml -- echo hello
+#    k get cj
+#    k describe cj <NAME>
+#    k get cj <NAME> -o yaml
+#    k get jobs
+#    k logs job/<JOB_NAME>
+#    k create job <JOB_NAME> --from=cronjob/<CRONJOB_NAME>  # 立即手動建立一次 Job
+#    k patch cj <NAME> -p '{"spec":{"suspend":true}}'    # 暫停排程
+#    k patch cj <NAME> -p '{"spec":{"suspend":false}}'   # 恢復排程
+#    k delete cj <NAME>
+#    k explain cj.spec.jobTemplate.spec
+#
+# 4. 常見排錯：
+#    沒有建立 Job → 檢查 schedule、timeZone、suspend、concurrencyPolicy、
+#                   startingDeadlineSeconds，以及 k describe cj <NAME> 的 Events。
+#    Job 有建立但失敗 → k describe job <JOB_NAME>、k logs job/<JOB_NAME>；
+#                      進一步檢查 Pod 的 Image、Command、Exit Code、資源等。
+#    Job 很快消失 → 檢查 History Limits 與 Job 的 ttlSecondsAfterFinished。
+#    執行時間不對 → 檢查 timeZone、Cron 表達式及 Controller 的排程延遲。

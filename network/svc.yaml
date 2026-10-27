@@ -1,0 +1,122 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-service                    # Service 名稱（同 Namespace 內唯一）
+  namespace: default                     # Service 所屬 Namespace
+  labels:
+    app: myapp                           # Service 自身的 Label，不用來選 Pod
+
+spec:
+  # ============================================================
+  # 1. Service Type
+  # ============================================================
+  type: ClusterIP                        # ClusterIP（預設）：叢集內部 IP
+                                         # NodePort：Node IP + nodePort 對外提供服務
+                                         # LoadBalancer：透過外部負載平衡器對外服務
+                                         # ExternalName：DNS CNAME 指向 externalName，不代理流量
+  # 注意：切換 ExternalName 時，應移除 selector、clusterIP 等不適用欄位，並設定 externalName
+
+  # ============================================================
+  # 2. Selector：匹配 Pod 的 metadata.labels
+  # ============================================================
+  selector:
+    app: myapp                           # 多個 selector Key 之間為 AND；不支援 matchExpressions
+  # Service 選的是 Pod，不是 Deployment；無 selector 時需自行管理 EndpointSlice
+
+  # ============================================================
+  # 3. Ports：Service port → Pod targetPort
+  # ============================================================
+  ports:
+    - name: http                         # Port 名稱；多個 Service Port 時必填且不可重複
+      protocol: TCP                      # TCP（預設）／UDP／SCTP
+      port: 80                           # Service 接收流量的 Port
+      targetPort: 8080                   # Pod 實際監聽的 Port；可填數字或具名 Container Port
+      # nodePort: 30008                  # NodePort / LoadBalancer 可用；通常由系統自動分配
+                                         # 預設範圍 30000–32767（叢集可調整）
+      # appProtocol: http                # 選填：應用層協定提示，不會自動啟用 HTTP 處理
+  # 若不設定 targetPort，預設等於 port；containerPort 不會自動建立 Service
+  # 多 Port 範例：新增另一個 - name: https / port: 443 / targetPort: 8443
+
+  # ============================================================
+  # 4. ClusterIP / Headless Service
+  # ============================================================
+  # clusterIP: 10.96.0.100               # 手動指定 Service IP，須在叢集 Service CIDR 內
+  # clusterIP: None                      # Headless Service：不分配虛擬 ClusterIP
+                                         # 常搭配 StatefulSet，DNS 可回傳 Pod/Endpoint IP
+  # 一般 ClusterIP 不填時自動分配；clusterIP 建立後通常不可隨意修改
+
+  # ============================================================
+  # 5. Session Affinity
+  # ============================================================
+  sessionAffinity: None                  # None（預設）：不保證同 Client 連到同 Pod
+                                         # ClientIP：依來源 IP 盡量維持相同後端
+  # sessionAffinityConfig:              # 僅在 sessionAffinity: ClientIP 時使用
+  #   clientIP:
+  #     timeoutSeconds: 10800            # 黏著時間（秒），預設 10800
+
+  # ============================================================
+  # 6. Traffic Policy（CKAD 次重點，知道作用即可）
+  # ============================================================
+  # externalTrafficPolicy: Cluster       # NodePort / LoadBalancer：可轉送其他 Node 的後端（預設）
+  # externalTrafficPolicy: Local         # 僅轉送本 Node 後端，通常可保留原始 Client IP
+                                         # 無本地可用 Endpoint 時，該 Node 不會代轉
+  # internalTrafficPolicy: Cluster       # 叢集內流量可轉送到其他 Node 的後端（預設）
+  # internalTrafficPolicy: Local         # 叢集內流量僅送本 Node 的後端
+
+  # ============================================================
+  # 7. 特殊 Type 專用設定（僅認識用途，不與目前 ClusterIP 範例混用）
+  # ============================================================
+  # externalName: example.com            # type: ExternalName 時使用；不搭配 selector
+  # loadBalancerSourceRanges:            # type: LoadBalancer 時可限制允許的來源 CIDR
+  #   - 192.168.1.0/24
+  # allocateLoadBalancerNodePorts: false # LoadBalancer 是否配置 NodePort；預設 true
+
+# ============================================================
+# CKAD 考試重點
+# ============================================================
+# 1. 流量路徑
+#   - ClusterIP：Client → Service DNS/ClusterIP:port → Ready Pod IP:targetPort
+#   - NodePort：Client → NodeIP:nodePort → Service → Pod:targetPort
+#   - LoadBalancer：Client → 外部 LB → Service → Pod
+#   - ExternalName：DNS CNAME 指向外部名稱，並非 Kubernetes 轉送流量
+#   - NodePort / LoadBalancer 是否可從外部連線，仍取決於環境、路由及防火牆
+#
+# 2. Service 與 Pod 的關係
+#   - selector 對應 Pod.metadata.labels；Service.metadata.labels 不參與 Pod 選擇
+#   - Service 與其透過 selector 選取的 Pod 位於同一 Namespace
+#   - Pod Running 不等於 Ready；未 Ready 的 Pod 通常不接收一般 Service 流量
+#   - EndpointSlice 可檢查實際後端；Service 不會自行建立 Pod
+#   - Headless：clusterIP: None，常用於 StatefulSet 與個別 Pod DNS
+#
+# 3. DNS 名稱
+#   - 同 Namespace：myapp-service
+#   - 跨 Namespace：myapp-service.default
+#   - 完整名稱：myapp-service.default.svc.cluster.local（叢集網域可能不同）
+#
+# 4. 三種 Port（常考）
+#   - port：Service 對外提供的連接埠
+#   - targetPort：後端 Pod 應用程式實際監聽的連接埠
+#   - nodePort：Node 對外開放的連接埠（NodePort / 部分 LoadBalancer）
+#   - targetPort 可寫具名 Port；containerPort 只是宣告，不會替程式開啟監聽
+#   - Service selector 僅支援簡單 Key-Value，不支援 matchExpressions
+#
+# 5. 常用 kubectl 指令
+#   - k get svc -A                               # 查看所有 Namespace 的 Service
+#   - k describe svc <NAME>                      # 查看 selector、ports、endpoints、事件
+#   - k get svc <NAME> -o yaml                   # 查看完整設定
+#   - k get po --show-labels                     # 核對 Pod Label
+#   - k get endpointslices -l kubernetes.io/service-name=<NAME>  # 查實際後端
+#   - k expose deployment <NAME> --name=my-svc --port=80 --target-port=8080
+#   - k expose deployment <NAME> --type=NodePort --port=80 --target-port=8080
+#   - k create svc clusterip <NAME> --tcp=80:8080
+#   - k create svc nodeport <NAME> --tcp=80:8080
+#   - k delete svc <NAME>
+#   - k explain svc.spec
+#
+# 6. CKAD 常見故障排查
+#   - 沒有 Endpoint → 檢查 selector、Pod labels、Namespace、Readiness
+#   - DNS 解析失敗 → 檢查 Service 名稱、Namespace、CoreDNS
+#   - 有 Endpoint 但連不上 → 檢查 port / targetPort、程式監聽位址與埠
+#   - NodePort 連不上 → 檢查 Node IP、nodePort、路由、防火牆
+#   - Pod 間仍不通 → 檢查 NetworkPolicy 是否阻擋
+#   - externalTrafficPolicy: Local → 注意接收流量的 Node 是否有本地 Endpoint

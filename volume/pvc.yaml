@@ -1,0 +1,122 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: myclaim                       # PVC 名稱
+  namespace: default                  # PVC 所屬 Namespace
+  labels:
+    app: myapp                        # 自訂 Label，方便管理與查詢
+
+spec:
+  accessModes:                        # 要求 PV 支援的存取模式
+    - ReadWriteOnce                   # RWO：允許單一 Node 讀寫
+    # - ReadOnlyMany                  # ROX：允許多個 Node 唯讀
+    # - ReadWriteMany                 # RWX：允許多個 Node 讀寫
+    # - ReadWriteOncePod              # RWOP：同時間只能有一個 Pod 使用（需支援的 CSI Volume）
+
+  resources:
+    requests:
+      storage: 1Gi                    # 申請 1Gi 儲存容量，PV 容量必須 >= 1Gi
+
+  storageClassName: manual            # 指定 StorageClass，必須與目標 PV 相符
+  # storageClassName: ""              # 不使用 StorageClass，僅匹配無 StorageClass 的 PV
+  # 不填寫 storageClassName：可能使用 Cluster 的預設 StorageClass
+
+  volumeMode: Filesystem              # Filesystem：以檔案系統掛載（預設）
+  # volumeMode: Block                 # Block：以原始區塊裝置提供，Pod 須使用 volumeDevices
+
+  # volumeName: pv-vol1               # 指定要綁定的 PV 名稱（仍須符合容量、AccessModes 等條件）
+
+  # selector:                         # 根據 PV 的 Label 選擇符合條件的 PV
+  #   matchLabels:
+  #     type: local                   # PV 必須有 type=local 的 Label
+  #   matchExpressions:
+  #     - key: environment
+  #       operator: In
+  #       values:
+  #         - production
+  #         - staging
+
+
+# ============================================================
+# CKAD 考試重點
+# ============================================================
+
+# 1. PVC 與 PV 綁定規則
+#   - PVC 是 Namespace 層級資源，PV 是 Cluster 層級資源
+#   - 一個 PVC 同時間只能綁定一個 PV
+#   - 一個 PV 同時間只能綁定一個 PVC
+#   - PVC 綁定 PV 後，不會自動改綁其他 PV
+#   - PV 容量必須 >= PVC 要求的容量
+#   - PV 的 accessModes 必須包含 PVC 要求的所有模式
+#   - PV 與 PVC 的 storageClassName 必須相符
+#   - PV 與 PVC 的 volumeMode 必須相符
+#   - PVC 可透過 volumeName 指定特定 PV
+#   - PVC 可透過 selector 選擇具有指定 Label 的 PV
+#   - PVC 找不到符合條件的 PV 時，通常維持 Pending
+#   - 若 StorageClass 支援動態供應，可能自動建立符合要求的 PV
+
+# 2. StorageClass
+#   - storageClassName: manual → 匹配 StorageClass 名稱為 manual 的 PV
+#   - storageClassName: ""     → 不使用 StorageClass
+#   - 不設定 storageClassName  → 可能自動套用預設 StorageClass
+#   - PVC 使用動態供應時，通常不需要手動建立 PV
+#   - PVC 設定 selector 時，無法透過動態供應建立新的 PV
+#   - volumeName 指定 PV 後，不會自動改選其他 PV
+
+# 3. AccessModes
+#   - RWO  ：單一 Node 讀寫，同 Node 可有多個 Pod 使用
+#   - ROX  ：多個 Node 唯讀
+#   - RWX  ：多個 Node 讀寫
+#   - RWOP ：整個 Cluster 同時間只能有一個 Pod 使用
+#   - PV 可以宣告多種模式，PVC 只需要求其中一種或多種
+#   - PVC 要求的所有 AccessModes 都必須被 PV 支援
+#   - RWX 不會自動視為 RWO，必須明確宣告
+#   - AccessModes 不等於檔案系統的讀寫權限控制
+
+# 4. PVC 與 Pod 的關係
+#   - Pod 透過 volumes.persistentVolumeClaim.claimName 使用 PVC
+#   - Pod 與 PVC 必須位於相同 Namespace
+#   - 多個 Pod 可以使用相同 PVC，但須符合 AccessModes 與儲存系統限制
+#   - 同一個 Pod 的多個 Container 可以掛載同一個 PVC
+#   - PVC 尚未 Bound 時，使用它的 Pod 通常無法正常啟動
+#   - PVC Bound 不代表 Pod 一定能成功掛載，仍可能發生 Mount 錯誤
+#   - Pod 刪除後，PVC 不會因此自動刪除
+
+# 5. PVC 刪除與資料保留
+#   - Pod 正在使用 PVC 時，PVC 通常會因 pvc-protection 維持 Terminating
+#   - 所有使用 PVC 的 Pod 都不再使用後，PVC 才能完成刪除
+#   - PVC 刪除後，PV 如何處理取決於 persistentVolumeReclaimPolicy
+#   - Retain：PV 進入 Released，底層資料保留
+#   - Delete：通常刪除 PV 與底層儲存資源
+#   - PVC 刪除後重新建立，不保證能取得原本的 PV 或資料
+
+# 6. PVC 擴容
+#   - PVC 可以增加 requests.storage，不能直接透過縮小 requests.storage 來縮容
+#   - 擴容需要 StorageClass 設定 allowVolumeExpansion: true
+#   - 底層儲存系統與 Driver 也必須支援擴容
+#   - 擴容通常不需要重新建立 PVC
+#   - PVC 擴容不代表所有情況下都能立即完成檔案系統擴容
+
+# 7. 常用操作與排查指令
+#   - k get pvc                        # 查看目前 Namespace 的 PVC
+#   - k get pvc -A                     # 查看所有 Namespace 的 PVC
+#   - k get pv                         # 查看所有 PV
+#   - k get sc                         # 查看 StorageClass
+#   - k describe pvc <PVC名稱>         # 查看 PVC 狀態、綁定資訊與 Events
+#   - k describe pv <PV名稱>           # 查看 PV 詳細資訊
+#   - k get pvc <PVC名稱> -o yaml      # 查看 PVC 完整 YAML
+#   - k explain pvc.spec               # 查看 PVC 可設定欄位
+#   - k delete pvc <PVC名稱>           # 刪除 PVC
+#   - k edit pvc <PVC名稱>             # 編輯 PVC，例如擴充容量
+
+# 8. CKAD 常見故障排查
+#   - PVC Pending → 檢查 PV 是否存在且為 Available
+#   - PVC Pending → 檢查 PV 容量是否足夠
+#   - PVC Pending → 檢查 AccessModes 是否符合
+#   - PVC Pending → 檢查 StorageClass 是否符合
+#   - PVC Pending → 檢查 volumeMode 是否符合
+#   - PVC Pending → 檢查 selector 與 volumeName 是否指定錯誤
+#   - PVC Pending → 檢查 StorageClass Provisioner 是否正常
+#   - PVC Terminating → 檢查是否仍有 Pod 正在使用
+#   - Pod Pending → 檢查 PVC 是否 Bound，並查看 Pod Events
+#   - Pod ContainerCreating → 檢查是否發生 Volume Mount 錯誤

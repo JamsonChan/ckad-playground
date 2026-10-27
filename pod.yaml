@@ -1,0 +1,457 @@
+# CKAD Pod 複習筆記：展示常見欄位與可選值；不保證可直接 kubectl apply
+# 同一個欄位若有多種選擇，會在註解列出常考選項及差異。
+apiVersion: v1                         # Pod 屬於 Core API Group，版本為 v1
+kind: Pod                              # 資源類型
+metadata:
+  name: myapp-pod                      # Pod 名稱；同 Namespace 內須唯一
+  namespace: default                   # Pod 所屬 Namespace；未指定時使用目前 Namespace
+  labels:                              # 可供 Service Selector、kubectl -l 等篩選
+    app: myapp
+    env: dev
+  annotations:                         # 補充描述資訊；不能用一般 Label Selector 篩選
+    description: "CKAD practice pod"
+
+spec:
+  # ==================== 1. Container 基本設定 ====================
+  containers:                          # Pod 中的主要 Container 清單，可有多個
+    - name: app                        # Container 名稱；同 Pod 內須唯一
+      image: nginx:alpine              # Image 名稱與 Tag；未寫 Tag 通常視為 latest
+      # imagePullPolicy：Always 每次啟動都檢查 Registry；IfNotPresent 本機有就不拉；Never 只用本機
+      # 預設值依 Image Tag / Digest 與建立時設定而定；:latest 或未指定 Tag 通常為 Always
+      imagePullPolicy: IfNotPresent
+      ports:                            # 宣告 Container Port；不代表自動建立 Service
+        - name: http                   # Port 名稱，可讓 Service / Probe 透過名稱參照
+          containerPort: 80            # Container 內應用程式監聽的 Port
+          protocol: TCP                # TCP（預設）/ UDP / SCTP
+      command: ["sh", "-c"]            # 覆蓋 Image 的 ENTRYPOINT；陣列格式
+      args: ["echo Hello; sleep 3600"] # 覆蓋 Image 的 CMD；與 command 搭配使用
+      workingDir: /app                  # Container 的工作目錄
+      # stdin: true                     # 保持標準輸入開啟（互動情境）
+      # tty: true                       # 配置虛擬終端機（互動情境）
+
+      # ==================== 2. Environment Variables ====================
+      env:                              # 逐一指定環境變數
+        - name: APP_ENV
+          value: "production"          # 直接指定字串值
+        - name: DB_HOST
+          valueFrom:                   # 從外部來源讀取，而不是直接寫 value
+            configMapKeyRef:          # 從 ConfigMap 的單一 Key 取得值
+              name: app-config         # ConfigMap 名稱（同 Namespace）
+              key: DB_HOST             # ConfigMap 的資料 Key
+              # optional: true         # true：Key / 物件不存在也不阻止啟動；預設 false
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:             # 從 Secret 的單一 Key 取得值
+              name: app-secret
+              key: password
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:                 # Downward API：讀取 Pod 自身欄位
+              fieldPath: metadata.name # 常用：metadata.name / metadata.namespace / spec.nodeName / status.podIP
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: CPU_LIMIT
+          valueFrom:
+            resourceFieldRef:         # Downward API：讀取 Container 資源 request / limit
+              resource: limits.cpu    # 常用：limits.cpu / limits.memory / requests.cpu / requests.memory
+      envFrom:                          # 將 ConfigMap / Secret 中所有 Key 批次匯入為環境變數
+        - configMapRef:
+            name: app-config
+        - secretRef:
+            name: app-secret
+      # env 適合單一 Key / 自訂變數名；envFrom 適合整份匯入，Key 會作為變數名
+
+      # ==================== 3. Resources ====================
+      resources:
+        requests:                       # Scheduler 用來判斷 Node 是否有足夠可分配資源
+          memory: "64Mi"               # Mi = Mebibyte；Gi = Gibibyte
+          cpu: "250m"                  # 1000m = 1 CPU；250m = 0.25 CPU
+        limits:                         # Container 的資源使用上限
+          memory: "128Mi"              # 超過 Memory Limit 可能被 OOMKilled
+          cpu: "500m"                  # 超過 CPU Limit 通常被 Throttle，而非直接殺掉
+      # requests / limits 是不同概念；此處沒有 max / min 欄位（那是 LimitRange）
+
+      # ==================== 4. Volume Mounts ====================
+      volumeMounts:                     # Container 內的掛載設定；name 對應 spec.volumes[].name
+        - name: shared-volume
+          mountPath: /data             # Container 內掛載目錄
+          readOnly: false              # true：唯讀；false：可寫（預設）
+        - name: config-volume
+          mountPath: /etc/app/config.txt
+          subPath: config.txt          # 只掛載 Volume 中指定檔案/子路徑；subPath 掛載不會收到 ConfigMap 自動更新
+        - name: secret-volume
+          mountPath: /etc/secret
+          readOnly: true
+        - name: pvc-volume
+          mountPath: /persistent
+
+      # ==================== 5. Readiness Probe ====================
+      # Readiness：判斷是否能接流量；失敗則 Pod 不 Ready、通常從 Service Endpoint 移除，不會因而重啟
+      # 檢查方式四選一：httpGet / tcpSocket / exec / grpc；不能在同一個 Probe 同時使用
+      readinessProbe:
+        httpGet:                        # HTTP：回應狀態碼 200~399 視為成功
+          path: /                       # 請求路徑
+          port: 80                      # 數字 Port 或已命名的 Container Port（如 http）
+          scheme: HTTP                  # HTTP（預設）/ HTTPS
+        initialDelaySeconds: 10        # Container 啟動後首次檢查前等待秒數
+        periodSeconds: 5               # 檢查間隔；預設 10 秒
+        timeoutSeconds: 2              # 單次檢查逾時秒數；預設 1 秒
+        failureThreshold: 3            # 連續失敗幾次判定 Not Ready；預設 3
+        successThreshold: 1            # 連續成功幾次恢復 Ready；預設 1（Readiness 可 > 1）
+
+      # ==================== 6. Liveness Probe ====================
+      # Liveness：判斷 Container 是否卡死；連續失敗達門檻後由 kubelet 重啟 Container
+      livenessProbe:
+        tcpSocket:                      # TCP：能建立連線即成功，不檢查 HTTP 回應內容
+          port: 80
+        initialDelaySeconds: 15
+        periodSeconds: 10
+        timeoutSeconds: 2
+        failureThreshold: 3
+        # successThreshold: 1          # Liveness / Startup 必須為 1
+
+      # ==================== 7. Startup Probe ====================
+      # Startup：保護啟動慢的程式；成功前不執行 Liveness / Readiness
+      # Startup 超過失敗門檻會重啟 Container；允許啟動時間約 periodSeconds × failureThreshold
+      startupProbe:
+        exec:                           # Exec：指令 Exit Code 0 為成功，非 0 為失敗
+          command: ["sh", "-c", "test -f /tmp/started"]
+        periodSeconds: 5
+        failureThreshold: 30           # 約可容忍 150 秒的啟動檢查期間
+      # gRPC Probe 的替代語法（只作為另一種方式，不要和上方 exec 同時放在同一 Probe）：
+      # grpc:
+      #   port: 50051                  # gRPC Health Checking；Port 必須是數字
+      #   service: my-service          # 可選：指定 gRPC Health Check Service 名稱
+
+      # ==================== 8. Container SecurityContext ====================
+      securityContext:                  # Container 層級；同名設定通常覆蓋 Pod 層級
+        runAsUser: 1000                 # Process 執行 UID；0 代表 root
+        runAsGroup: 3000                # Process 主要 GID
+        runAsNonRoot: true              # 要求不能以 root 執行
+        readOnlyRootFilesystem: true    # 根檔案系統唯讀；需要寫入時可搭配 Volume
+        allowPrivilegeEscalation: false # 禁止程序透過 exec 等途徑取得更高權限
+        privileged: false               # true：特權 Container；安全性風險高
+        capabilities:                   # Linux Capabilities：精細控制權限
+          add: ["NET_BIND_SERVICE"]     # add：增加能力；例如綁定低 Port
+          drop: ["ALL"]                 # drop：移除能力；ALL 表示移除所有可移除能力
+        seccompProfile:
+          type: RuntimeDefault         # RuntimeDefault：Runtime 預設限制
+          # type 可為 RuntimeDefault / Unconfined / Localhost
+          # Localhost 需額外指定 localhostProfile（Node 本機 Profile）
+
+      # ==================== 9. Container Lifecycle ====================
+      lifecycle:
+        postStart:                      # Container 建立後觸發；不保證先於 ENTRYPOINT 執行
+          exec:
+            command: ["sh", "-c", "echo started > /tmp/start.log"]
+        preStop:                        # Container 終止前執行；計入終止寬限期
+          exec:
+            command: ["sh", "-c", "sleep 5"]
+      # Lifecycle Handler 常見 exec；另有 httpGet / sleep 等方式（依 K8s 版本）
+
+  # ==================== 10. Init Containers ====================
+  initContainers:                       # 一般 Init Container 依序執行成功後才啟動主要 Container
+    - name: init-container
+      image: busybox
+      command: ["sh", "-c", "echo Initializing; sleep 5"]
+      volumeMounts:                     # 可與主 Container 共用同一 Volume
+        - name: shared-volume
+          mountPath: /data
+  # 原生 Sidecar 可用 initContainers[].restartPolicy: Always；一般 Init Container 不需設定此欄位
+
+  # ==================== 11. Volumes ====================
+  volumes:                              # 定義 Pod 可使用的 Volume，須再由 volumeMounts 掛入 Container
+    - name: shared-volume
+      emptyDir: {}                      # Pod 分配到 Node 後建立；Pod 被移除則資料消失；Container 重啟仍保留
+    - name: memory-volume
+      emptyDir:
+        medium: Memory                 # 預設使用 Node 儲存空間；Memory 使用 tmpfs
+        sizeLimit: 100Mi               # 限制 emptyDir 容量
+    - name: pvc-volume
+      persistentVolumeClaim:
+        claimName: myclaim              # 掛載同 Namespace 的 PVC；PVC 再綁定 PV / 動態供應儲存
+        readOnly: false                 # true 唯讀掛載；與 PVC / PV Access Mode 不同
+    - name: config-volume
+      configMap:
+        name: app-config               # 將 ConfigMap Key 掛載為檔案
+        items:                         # 只選指定 Key，並重新指定檔名
+          - key: app.properties
+            path: config.txt
+    - name: secret-volume
+      secret:
+        secretName: app-secret          # 將 Secret Key 掛載為檔案
+        defaultMode: 256               # 十進位 256 = 八進位 0400（唯讀權限）；避免 YAML 八進位歧義
+    - name: host-volume
+      hostPath:
+        path: /tmp/data                # Node 本機路徑；跨 Node 不保證相同資料
+        type: DirectoryOrCreate        # 常用：Directory / DirectoryOrCreate / File / FileOrCreate
+  # CKAD 重點：emptyDir、PVC、ConfigMap、Secret；hostPath 了解用途與風險即可
+
+  # ==================== 12. Pod SecurityContext ====================
+  securityContext:                      # Pod 層級的預設安全設定
+    runAsUser: 1000                     # 預設 UID；可被 Container 同名設定覆蓋
+    runAsGroup: 3000                    # 預設 GID
+    fsGroup: 2000                       # 支援的 Volume 檔案存取群組
+    runAsNonRoot: true                  # 要求 Pod 中 Container 不以 root 執行
+    seccompProfile:
+      type: RuntimeDefault
+
+  # ==================== 13. ServiceAccount ====================
+  serviceAccountName: my-service-account # Pod 使用的 ServiceAccount（同 Namespace）；預設 default
+  automountServiceAccountToken: false    # true（預設）自動掛載 API Token；false 不自動掛載
+  # ServiceAccount 是 Pod 對 API Server 驗證的身分；權限由 RBAC RoleBinding 等決定
+
+  # ==================== 14. Pod Lifecycle ====================
+  restartPolicy: Always                 # Always：總是重啟；OnFailure：非 0 結束才重啟；Never：不重啟
+  # Pod 預設 Always；Deployment 管理的 Pod 必須 Always；Job 通常 OnFailure 或 Never
+  terminationGracePeriodSeconds: 30    # Pod 終止寬限期（秒）；preStop 也計入此時間
+
+  # ==================== 15. Node Selection ====================
+  nodeSelector:
+    disktype: ssd                       # 必須符合 Node Label：disktype=ssd（硬性條件）
+  nodeName: node01                      # 直接指定 Node，繞過 Scheduler；通常不與排程條件同時用
+
+  # ==================== 16. Node / Pod Affinity ====================
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution: # 硬性要求；不符合就不能排程
+        nodeSelectorTerms:             # 多個 Terms 為 OR；同一 Term 的多個 Expressions 為 AND
+          - matchExpressions:
+              - key: disktype          # 比對 Node Label
+                operator: In           # In / NotIn / Exists / DoesNotExist / Gt / Lt
+                values: ["ssd"]         # In / NotIn 需 values；Exists / DoesNotExist 不需 values
+      preferredDuringSchedulingIgnoredDuringExecution: # 軟性偏好；不符合仍可排程
+        - weight: 100                  # 偏好權重 1~100
+          preference:
+            matchExpressions:
+              - key: zone
+                operator: In
+                values: ["zone-a"]
+    podAffinity:                        # 希望與符合 Label 的其他 Pod 在同一拓樸區域
+      requiredDuringSchedulingIgnoredDuringExecution: # 硬性 Pod 親和性
+        - labelSelector:
+            matchLabels:
+              app: backend             # 選擇其他 Pod 的 Label
+          topologyKey: kubernetes.io/hostname # 以 Node 為區域；也常見 topology.kubernetes.io/zone
+    podAntiAffinity:                    # 希望避開符合 Label 的其他 Pod
+      preferredDuringSchedulingIgnoredDuringExecution: # 軟性 Pod 反親和性
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app: backend
+            topologyKey: kubernetes.io/hostname
+  # required = 硬限制；preferred = 盡量滿足；IgnoredDuringExecution = 執行後 Label 改變不強制驅逐
+
+  # ==================== 17. Tolerations ====================
+  tolerations:                          # 允許 Pod 容忍 Node Taint；不代表一定排到該 Node
+    - key: dedicated                   # 要容忍的 Taint Key
+      operator: Equal                   # Equal：key/value 比對；Exists：只檢查 key（不需 value）
+      value: gpu                        # operator=Equal 時指定 Taint Value
+      effect: NoSchedule                # NoSchedule：不排新 Pod；PreferNoSchedule：盡量不排
+                                       # NoExecute：不排新 Pod，並驅逐不容忍的既有 Pod
+    - key: maintenance
+      operator: Exists
+      effect: NoExecute
+      tolerationSeconds: 60             # NoExecute：最多容忍 60 秒，之後可被驅逐；未設可持續容忍
+
+  # ==================== 18. Topology Spread Constraints ====================
+  topologySpreadConstraints:            # 控制符合 Label 的 Pod 在 Node / Zone 之間的分布
+    - maxSkew: 1                        # 允許的最大分布偏差；數字越小要求越平均
+      topologyKey: kubernetes.io/hostname # 依 Node 分布；也可用 topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule  # DoNotSchedule：硬性限制；ScheduleAnyway：盡量平均
+      labelSelector:
+        matchLabels:
+          app: myapp                    # 計算分布時要納入的 Pod Label
+
+  # ==================== 19. DNS ====================
+  dnsPolicy: ClusterFirst               # ClusterFirst（一般預設）/ Default（繼承 Node DNS）
+                                        # None（自行提供 dnsConfig）/ ClusterFirstWithHostNet
+
+
+
+# ============================================================
+# CKAD 考試重點
+# ============================================================
+
+# 1. Pod 基本觀念
+#   - Pod 是 Kubernetes 最小的可部署單位
+#   - 一個 Pod 可以包含多個 Container
+#   - 同一 Pod 的 Container 共享 Network Namespace
+#   - 同一 Pod 的 Container 可以透過 localhost 互相通訊
+#   - 同一 Pod 的 Container 可透過 Volume 共享資料
+#   - Pod 刪除後重新建立，通常會取得新的 Pod IP
+#   - Pod 的大部分 spec 欄位建立後無法直接修改
+#   - 實務上通常使用 Deployment 管理長期運作的 Pod
+
+# 2. Command 與 Args
+#   - command 對應 Docker ENTRYPOINT
+#   - args 對應 Docker CMD
+#   - command、args 可以單獨設定，也可以同時設定
+#   - 使用 Shell 語法時，通常要明確指定 sh -c
+#   - command / args 不會自動透過 Shell 執行
+
+# 3. Environment Variables
+#   - env.value：直接設定環境變數
+#   - configMapKeyRef：從 ConfigMap 的指定 Key 讀取
+#   - secretKeyRef：從 Secret 的指定 Key 讀取
+#   - envFrom：一次載入整個 ConfigMap 或 Secret
+#   - fieldRef：透過 Downward API 取得 Pod 資訊
+#   - resourceFieldRef：取得 Container 的資源設定
+#   - ConfigMap / Secret 更新後，既有環境變數不會自動更新
+#   - ConfigMap / Secret 以 Volume 掛載時，通常可逐步更新檔案
+#   - 使用 subPath 掛載的 ConfigMap / Secret 不會自動更新
+
+# 4. Resources
+#   - requests：Scheduler 排程時參考的資源需求
+#   - limits：Container 的資源使用上限
+#   - CPU 單位：1000m = 1 CPU
+#   - Memory 單位：Mi、Gi
+#   - CPU 超過 Limit：通常會受到 Throttling
+#   - Memory 超過 Limit：可能發生 OOMKilled
+#   - requests > limits：設定無效
+#   - 只有 limits、沒有 requests 時，requests 可能預設等於 limits
+#   - LimitRange：設定 Namespace 內的預設值、最小值、最大值
+#   - ResourceQuota：限制 Namespace 的整體資源配額
+#   - Pod QoS：Guaranteed、Burstable、BestEffort
+
+# 5. Probes
+#   - Readiness：失敗時 Pod 變 Not Ready，通常不再接收 Service 流量
+#   - Liveness：連續失敗達門檻時，重新啟動 Container
+#   - Startup：啟動期間暫停 Liveness / Readiness 檢查
+#   - HTTP / TCP / Exec / gRPC：同一個 Probe 只能選一種
+#   - initialDelaySeconds：首次檢查前的延遲
+#   - periodSeconds：檢查間隔
+#   - timeoutSeconds：單次檢查超時時間
+#   - failureThreshold：連續失敗次數門檻
+#   - successThreshold：連續成功次數門檻
+#   - Liveness / Startup 的 successThreshold 必須為 1
+#   - Readiness 失敗不會直接重新啟動 Container
+#   - Startup 失敗達門檻會觸發 Container 重啟
+
+# 6. Init Containers
+#   - 一般 Init Container 必須成功完成，Main Container 才會啟動
+#   - 多個一般 Init Container 依照 YAML 順序執行
+#   - Init Container 常用於等待 Service、初始化檔案
+#   - Init Container 可透過 emptyDir 與 Main Container 共享資料
+#   - 一般 Init Container 不設定 restartPolicy
+#   - 原生 Sidecar 可使用 initContainers + restartPolicy: Always
+#   - 原生 Sidecar 與一般 Init Container 的生命週期不同
+
+# 7. Volumes
+#   - volumes：定義 Pod 使用的 Volume
+#   - volumeMounts：定義 Container 掛載 Volume 的路徑
+#   - volumeMounts.name 必須對應 volumes.name
+#   - emptyDir：Pod 刪除後資料消失，Container 重啟資料保留
+#   - PVC：Pod 透過 claimName 使用持久化儲存
+#   - hostPath：使用 Node 本機目錄
+#   - ConfigMap / Secret：可以掛載成檔案
+#   - subPath：只掛載 Volume 中的指定路徑
+#   - 多個 Container 可以掛載同一個 Volume
+#   - Pod 與 PVC 必須位於相同 Namespace
+
+# 8. SecurityContext
+#   - Pod SecurityContext：設定 Pod 層級的安全屬性
+#   - Container SecurityContext：設定單一 Container 的安全屬性
+#   - Container 層級設定通常優先於對應的 Pod 層級設定
+#   - runAsUser：指定 UID
+#   - runAsGroup：指定 GID
+#   - runAsNonRoot：要求以非 Root 身分執行
+#   - fsGroup：設定支援的 Volume 檔案存取群組
+#   - privileged：是否啟用特權模式
+#   - allowPrivilegeEscalation：是否允許提升權限
+#   - capabilities：新增或移除 Linux Capabilities
+#   - readOnlyRootFilesystem：Root Filesystem 設為唯讀
+#   - seccompProfile：設定系統呼叫過濾策略
+
+# 9. ServiceAccount
+#   - serviceAccountName：指定 Pod 使用的 ServiceAccount
+#   - 未指定時，通常使用 Namespace 的 default ServiceAccount
+#   - ServiceAccount 用於 Pod 存取 Kubernetes API 的身分驗證
+#   - RBAC Role / ClusterRole 定義權限
+#   - RoleBinding / ClusterRoleBinding 負責綁定權限
+#   - automountServiceAccountToken：控制是否自動掛載 Token
+#   - ServiceAccount 本身不代表具有額外 API 權限
+
+# 10. Node Scheduling
+#   - nodeSelector：依 Node Label 進行精確匹配
+#   - nodeName：直接指定 Node，繞過 Scheduler
+#   - nodeAffinity：依 Node Label 設定更彈性的排程條件
+#   - requiredDuringScheduling：必須符合
+#   - preferredDuringScheduling：盡量符合
+#   - IgnoredDuringExecution：排程後 Label 改變通常不會因此驅逐 Pod
+#   - matchExpressions 支援 In、NotIn、Exists、DoesNotExist、Gt、Lt
+#   - 同一個 matchExpressions 內的條件為 AND
+#   - 多個 nodeSelectorTerms 之間為 OR
+
+# 11. Pod Affinity / Anti-Affinity
+#   - podAffinity：希望與符合條件的 Pod 排程到相同拓樸區域
+#   - podAntiAffinity：希望與符合條件的 Pod 分開部署
+#   - topologyKey：指定拓樸範圍，例如 Node 或 Zone
+#   - kubernetes.io/hostname：以 Node 為拓樸範圍
+#   - topology.kubernetes.io/zone：以 Zone 為拓樸範圍
+#   - required：硬性要求
+#   - preferred：偏好條件
+
+# 12. Taints / Tolerations
+#   - Taint 設定在 Node，Toleration 設定在 Pod
+#   - NoSchedule：不允許不具容忍設定的新 Pod 排入
+#   - PreferNoSchedule：盡量避免排入
+#   - NoExecute：可能驅逐不具容忍設定的既有 Pod
+#   - Equal：比對 Key、Value 與 Effect
+#   - Exists：只要求 Key 存在，不需要指定 Value
+#   - tolerationSeconds：容忍 NoExecute Taint 的時間
+#   - Toleration 只代表允許排程，不保證一定排到該 Node
+
+# 13. Restart Policy
+#   - Always：Container 結束後重新啟動
+#   - OnFailure：Container 失敗時重新啟動
+#   - Never：Container 結束後不重新啟動
+#   - Deployment 的 Pod 通常使用 Always
+#   - Job 的 Pod 通常使用 Never 或 OnFailure
+#   - CrashLoopBackOff：Container 反覆失敗並重新啟動時的等待狀態
+
+# 14. 常見 Pod 狀態
+#   - Pending：Pod 尚未完成排程或啟動準備
+#   - Running：Pod 已綁定 Node，至少一個 Container 正在執行或啟動/重啟
+#   - Succeeded：所有 Container 成功結束且不會重啟
+#   - Failed：至少一個 Container 失敗結束，且不會重啟
+#   - Unknown：無法取得 Pod 狀態
+#   - Terminating：Pod 正在刪除（不是正式的 Pod Phase）
+#   - CrashLoopBackOff：Container 反覆崩潰後等待重啟
+#   - ImagePullBackOff：Image 拉取失敗後進入重試等待
+#   - ContainerCreating：Container 正在建立或準備中
+
+# 15. 常用 kubectl 指令
+#   - k run <NAME> --image=<IMAGE>          # 快速建立 Pod
+#   - k run <NAME> --image=<IMAGE> --dry-run=client -o yaml
+#   - k get po                              # 查看 Pod
+#   - k get po -A                           # 查看所有 Namespace 的 Pod
+#   - k get po -o wide                      # 查看 Pod IP、Node 等資訊
+#   - k describe po <NAME>                  # 查看詳細資訊與 Events
+#   - k logs <NAME>                         # 查看 Container Logs
+#   - k logs <NAME> -c <CONTAINER>          # 指定 Container
+#   - k logs <NAME> --previous              # 查看前一次 Container Logs
+#   - k exec -it <NAME> -- sh               # 進入 Container
+#   - k exec <NAME> -- <COMMAND>            # 在 Container 執行命令
+#   - k edit po <NAME>                      # 編輯 Pod（受不可變欄位限制）
+#   - k delete po <NAME>                    # 刪除 Pod
+#   - k explain pod.spec                    # 查看 Pod Spec 欄位
+#   - k explain pod.spec.containers         # 查看 Container 欄位
+
+# 16. CKAD 常見故障排查
+#   - Pod Pending → 檢查 Node 資源、Taints、Affinity、PVC
+#   - Pod Pending → 使用 describe 查看 FailedScheduling Events
+#   - ImagePullBackOff → 檢查 Image 名稱、Tag、Registry 權限
+#   - CrashLoopBackOff → 檢查 logs、command、args、Probes
+#   - OOMKilled → 檢查 Memory Limit 與程式記憶體使用量
+#   - Pod Not Ready → 檢查 Readiness Probe
+#   - Container 不斷重啟 → 檢查 Liveness / Startup Probe
+#   - ContainerCreating → 檢查 Volume Mount、Image Pull、CNI
+#   - Init Container 卡住 → 檢查 Init Container Logs
+#   - Permission Denied → 檢查 SecurityContext、檔案權限
+#   - FailedMount → 檢查 PVC、ConfigMap、Secret 是否存在
+#   - Forbidden → 檢查 ServiceAccount 與 RBAC 權限
+#   - Pod 無法排程 → 檢查 nodeSelector、Affinity、Tolerations

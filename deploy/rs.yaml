@@ -1,0 +1,101 @@
+# CKAD ReplicaSet 複習筆記
+# 重點：副本數、Label Selector、Pod Template、控制器行為與故障排查。
+# 此檔供閱讀與語法 Highlight，不保證所有範例適合直接部署。
+apiVersion: apps/v1                  # ReplicaSet 使用 apps/v1
+kind: ReplicaSet                     # 維持指定數量的符合條件的 Pod
+metadata:
+  name: myapp-replicaset             # ReplicaSet 名稱（Namespace 內唯一）
+  namespace: default                 # 所屬 Namespace；省略則使用目前 Namespace
+  labels:                            # RS 自身的 Label；不等於用來管理 Pod 的 Selector
+    app: myapp
+    tier: frontend
+
+spec:
+  # ============================================================
+  # 1. Replicas：期望副本數
+  # ============================================================
+  replicas: 3                        # 預期 Pod 數量；預設 1；設為 0 可縮至零個
+                                     # Pod 不足時補建，過多時刪除；不保證全部 Ready
+
+  # ============================================================
+  # 2. Selector：決定 RS 管理哪些 Pod（建立後不可修改）
+  # ============================================================
+  selector:                          # 必須符合下方 template.metadata.labels
+    matchLabels:                     # 指定 Label 完全相等；多個條件為 AND
+      app: myapp
+    matchExpressions:                # 與 matchLabels 同時存在時，也是 AND
+      - key: tier                    # 要判斷的 Label Key
+        operator: In                 # In：Label 存在且值屬於 values
+        values:                      # In、NotIn 必須提供非空 values
+          - frontend
+          - backend
+      # 其他重要 operator（改用時需調整 values）：
+      # NotIn：Label 不存在，或存在但值不在 values 中
+      # Exists：只要求 Label Key 存在；不可設定 values
+      # DoesNotExist：要求 Label Key 不存在；不可設定 values
+      # 同一 selector 下所有條件都必須成立（AND）
+
+  # ============================================================
+  # 3. Pod Template：建立新 Pod 時套用的模板
+  # ============================================================
+  template:                         # PodTemplateSpec，放入 Pod 的 metadata 與 spec
+    metadata:
+      labels:
+        app: myapp                  # 必須符合 spec.selector
+    spec:
+      containers: []                # 此處填入 Pod.spec.containers，其他設定參考 Pod.yaml
+
+# ============================================================
+# 4. CKAD 必懂：ReplicaSet 與 Deployment
+# ============================================================
+# ReplicaSet：維持 Pod 數量；不提供 Deployment 的 RollingUpdate / Rollback。
+# Deployment → ReplicaSet → Pod；實務上通常由 Deployment 管理 ReplicaSet。
+# 修改 RS 的 spec.template（例如 image）只影響「之後建立」的 Pod。
+# 既有 Pod 不會自動換 Image；手動刪除後，補建 Pod 才使用新 Template。
+# 若由 Deployment 管理，應修改 Deployment，不要直接修改底下的 RS。
+# Deployment 更新 Template 通常建立新 RS，並逐步調整新舊 RS 副本數。
+
+# ============================================================
+# 5. Selector、接管與刪除行為
+# ============================================================
+# metadata.labels：RS 自己的 Label；spec.selector：挑選被管理的 Pod。
+# template.metadata.labels：新 Pod 的 Label；必須滿足 RS 的 Selector。
+# 符合 Selector、且沒有其他 Controller owner 的 Pod，可能被 RS 接管。
+# 已被其他 Controller 管理的 Pod，不會僅因 Label 符合而直接被接管。
+# 避免不同 RS 的 Selector 重疊；可查看 Pod 的 ownerReferences 判斷歸屬。
+# 刪除 RS 預設會連帶刪除其管理的 Pod；--cascade=orphan 可保留 Pod。
+# 刪除 Pod 後又出現，是 RS 正在維持 replicas，並非刪除失敗。
+
+# ============================================================
+# 6. Service 與 Scaling
+# ============================================================
+# Service 透過自己的 selector 選擇 Pod，不是直接連接 RS。
+# Service 的 selector 必須符合 Pod Label；RS 不會自動建立 Service。
+# k scale rs <NAME> --replicas=5      # 調整 RS 副本數
+# k scale deploy <NAME> --replicas=5  # 若由 Deployment 管理，通常調整 Deployment
+
+# ============================================================
+# 7. 常用 kubectl 指令（CKAD）
+# ============================================================
+# k get rs                            # 查看 RS；DESIRED/CURRENT/READY
+# k get rs -A                         # 查看所有 Namespace 的 RS
+# k describe rs <NAME>                # 查看 Selector、Events 與建立 Pod 失敗原因
+# k get rs <NAME> -o yaml             # 查看完整定義與狀態
+# k get po -l app=myapp               # 用 Label 找到相關 Pod
+# k get po <NAME> -o yaml             # 查看 metadata.ownerReferences
+# k edit rs <NAME>                    # 修改 RS（但 selector 不可修改）
+# k delete rs <NAME>                  # 預設連同管理的 Pod 一起刪除
+# k delete rs <NAME> --cascade=orphan # 只刪 RS，保留其 Pod
+# k explain rs.spec.selector          # 查詢 Selector 欄位
+# k explain rs.spec.template          # 查詢 Pod Template 欄位
+
+# ============================================================
+# 8. 常見故障排查
+# ============================================================
+# DESIRED 3 / CURRENT 0：檢查 describe rs 的 Events、Quota、建立 Pod 錯誤。
+# CURRENT 3 / READY 0：檢查 Pod 狀態、Readiness Probe、Logs、Events。
+# Pending：檢查 Node 資源、nodeSelector/Affinity、Taints、PVC。
+# CrashLoopBackOff：檢查 logs、command/args、Liveness Probe。
+# ImagePullBackOff：檢查 Image、Tag、Registry 與 imagePullSecrets。
+# Pod 意外被接管：檢查 selector、Pod Labels 與 ownerReferences。
+# 修改 Image 後 Pod 未更新：RS 不會自動 RollingUpdate；應用 Deployment。

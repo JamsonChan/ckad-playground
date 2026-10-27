@@ -1,0 +1,94 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-vol1                       # PV 名稱（Cluster 範圍，不屬於任何 Namespace）
+  labels:
+    type: local                       # 自訂 Label，可讓 PVC 透過 selector 選擇 PV
+
+spec:
+  capacity:
+    storage: 1Gi                      # PV 提供的儲存容量
+
+  accessModes:                        # Volume 支援的存取模式（可宣告多種）
+    - ReadWriteOnce                   # RWO：允許單一 Node 讀寫
+    # - ReadOnlyMany                  # ROX：允許多個 Node 唯讀
+    # - ReadWriteMany                 # RWX：允許多個 Node 讀寫
+    # - ReadWriteOncePod              # RWOP：同時間僅允許一個 Pod 使用（限支援的 CSI Volume）
+
+  persistentVolumeReclaimPolicy: Retain  # PVC 刪除後，保留 PV 與底層資料
+  # Retain：保留 PV 與資料，PV 進入 Released，需手動回收
+  # Delete：刪除 PV，通常也刪除底層儲存資源
+
+  storageClassName: manual            # StorageClass 名稱，PVC 必須指定相同名稱才能匹配
+  # storageClassName: ""              # 不使用 StorageClass，適合手動建立 PV/PVC
+
+  volumeMode: Filesystem              # Filesystem：以檔案系統掛載（預設）
+  # volumeMode: Block                 # Block：以原始區塊裝置提供，Pod 須使用 volumeDevices
+
+  hostPath:                           # 使用 Node 本機目錄作為儲存空間（適合單 Node 練習）
+    path: "/tmp/data"                 # Node 上的實際儲存路徑
+    type: DirectoryOrCreate          # 目錄不存在時自動建立
+    # type: Directory                # 目錄必須已存在
+    # type: FileOrCreate             # 檔案不存在時自動建立
+    # type: File                     # 檔案必須已存在
+    # type: Socket                   # 必須是 Unix Socket
+    # type: CharDevice               # 必須是字元裝置
+    # type: BlockDevice              # 必須是區塊裝置
+
+  # mountOptions:                     # 掛載選項，需底層 Volume 類型支援
+  #   - ro                            # 唯讀掛載
+  #   - noexec                        # 禁止執行檔案
+
+  # claimRef:                         # 預先保留 PV 給指定 PVC
+  #   namespace: default              # PVC 所在 Namespace
+  #   name: pvc-vol1                  # PVC 名稱
+
+
+# ============================================================
+# CKAD 考試重點
+# ============================================================
+
+# 1. PV 與 PVC 綁定規則
+#   - PV 是 Cluster 層級資源，PVC 是 Namespace 層級資源
+#   - 一個 PV 同時間只能綁定一個 PVC
+#   - PVC 綁定 PV 後，不會自動改綁其他 PV
+#   - PV 容量必須 >= PVC 要求的容量
+#   - PV 的 accessModes 必須包含 PVC 要求的所有模式
+#   - PV 與 PVC 的 storageClassName 必須相符
+#   - PV 與 PVC 的 volumeMode 必須相符
+#   - PVC 可透過 volumeName 指定特定 PV
+#   - PV 可透過 claimRef 預先保留給特定 PVC
+#   - PVC 若找不到符合條件的 PV，通常會維持 Pending
+#   - 若使用 StorageClass 動態供應，可能自動建立新的 PV
+
+# 2. AccessModes
+#   - RWO  ：單一 Node 讀寫，同 Node 可有多個 Pod 使用
+#   - ROX  ：多個 Node 唯讀
+#   - RWX  ：多個 Node 讀寫
+#   - RWOP ：整個 Cluster 同時間只能有一個 Pod 使用
+#   - RWX 不會自動被視為 RWO，必須明確宣告
+#   - AccessModes 不是檔案系統的讀寫權限控制機制
+
+# 3. PVC 刪除與 PV 回收
+#   - Pod 正在使用 PVC 時，PVC 通常會因 pvc-protection 維持 Terminating
+#   - Retain：PVC 刪除後，PV 進入 Released，底層資料保留
+#   - Retain：Released 的 PV 不會自動重新綁定其他 PVC
+#   - Delete：PVC 刪除後，通常連同 PV 與底層儲存資源一起刪除
+#   - PV 的回收政策與 AccessModes 無關
+
+# 4. Volume 與資料生命週期
+#   - emptyDir：Pod 刪除後資料消失，Container 重啟則保留
+#   - hostPath：資料位於 Node 本機，Pod 刪除後通常仍存在
+#   - PV/PVC：可提供跨 Pod 生命週期的持久化儲存
+#   - 不同 Pod 可使用同一 PVC，但須符合儲存系統與 AccessModes 限制
+#   - 同一 Pod 的多個 Container 可掛載相同 Volume，共享資料
+#   - hostPath 不適合一般多 Node 正式環境
+
+# 5. 常用排查指令
+#   - k get pv                         # 查看所有 PV
+#   - k get pvc -A                     # 查看所有 Namespace 的 PVC
+#   - k describe pv <PV名稱>           # 查看 PV 詳細資訊
+#   - k describe pvc <PVC名稱>         # 查看 PVC 詳細資訊與 Events
+#   - k get sc                         # 查看 StorageClass
+#   - k explain pv.spec                # 查看 PV 可設定欄位
+#   - k explain pvc.spec               # 查看 PVC 可設定欄位

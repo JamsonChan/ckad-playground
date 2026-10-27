@@ -1,0 +1,111 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: example-job                     # Job 名稱；一次性／批次任務
+  namespace: default                    # Job 與其 Pod 位於同一 Namespace
+  labels:
+    app: example-job                    # Job 自身 Label，與 Pod Label 不必相同
+
+spec:
+  # ============================================================
+  # 1. 完成次數與並行數量
+  # ============================================================
+  completions: 3                        # 需要成功完成 3 次；一般 NonIndexed Job 預設 1
+                                        # 不設定 completions 且設定 parallelism 時，可形成 Work Queue 模式
+  parallelism: 3                        # 最多允許 3 個 Pod 同時執行；預設 1
+                                        # 只是上限，不保證一定同時有 3 個 Running Pod
+                                        # parallelism: 0 → 暫時不啟動新 Pod
+
+  # ============================================================
+  # 2. 失敗重試與執行期限
+  # ============================================================
+  backoffLimit: 6                       # Job 失敗重試上限；預設 6，0 表示不重試
+                                        # Never：通常建立替代 Pod；OnFailure：可重啟原 Pod 內 Container
+                                        # 重試採退避等待；超過限制 Job 會失敗
+  activeDeadlineSeconds: 120            # Job 執行期限（秒）；超時則終止 Pod 並使 Job 失敗
+                                        # 優先於 backoffLimit；不是每個 Pod 各自的期限
+                                        # 暫停後恢復，計時可能重新開始
+  ttlSecondsAfterFinished: 300          # Job 成功或失敗後，經 300 秒自動刪除 Job 及其 Pod
+                                        # 0：完成後立即符合清理條件；不設定：通常保留
+
+  # ============================================================
+  # 3. 完成模式
+  # ============================================================
+  completionMode: NonIndexed            # NonIndexed（預設）：只計算成功次數，不區分任務編號
+                                        # Indexed：每個完成項目有獨立 Index（0 ~ completions-1）
+                                        # Indexed Pod 可透過 JOB_COMPLETION_INDEX 環境變數取得編號
+                                        # Indexed 適合分片運算；同一 Index 仍可能重複執行
+
+  # ============================================================
+  # 4. 暫停
+  # ============================================================
+  suspend: false                        # false（預設）：正常執行；true：暫停 Job
+                                        # 暫停會終止尚未完成的執行中 Pod，保留已成功次數
+                                        # 恢復後繼續處理未完成工作
+
+  # ============================================================
+  # 5. Pod Template（只保留最低限度結構，詳細內容參考 Pod.yaml）
+  # ============================================================
+  template:                              # PodTemplateSpec：相當於 Pod 的 metadata + spec
+    spec:
+      restartPolicy: Never               # Job 只允許 Never 或 OnFailure，不能使用 Always
+                                        # Never：失敗後不在原 Pod 重啟，Job 通常建立替代 Pod
+                                        # OnFailure：Container 失敗可在同一 Pod 重啟
+      containers:
+        - name: worker                   # Pod Template 必填的最小 Container 範例
+          image: busybox:1.36            # 其他 command、env、volumes、probes 等參考 Pod.yaml
+          command: ["sh", "-c", "echo Hello Job"]
+
+  # ============================================================
+  # 6. Pod 失敗策略（中階考點：了解用途與互斥條件）
+  # ============================================================
+  podFailurePolicy:                      # 根據 Pod 失敗原因採取不同動作（需要 restartPolicy: Never）
+    rules:
+      - action: FailJob                  # 符合退出碼條件，直接判定整個 Job 失敗
+        onExitCodes:
+          operator: In                   # In：退出碼在清單內；NotIn：不在清單內
+          values: [42]                   # 可額外設定 containerName 指定 Container
+  # 其他 action：Ignore（不計入重試）、Count（計入重試）、FailIndex（Indexed 專用）
+  # 也可用 onPodConditions 判斷 Pod Condition，例如 DisruptionTarget
+  # 注意：啟用 podFailurePolicy 時，template.spec.restartPolicy 必須為 Never
+
+  # ============================================================
+  # 7. Indexed Job 進階設定（認識即可）
+  # ============================================================
+  # backoffLimitPerIndex: 2              # Indexed：每個 Index 個別限制重試次數
+  # maxFailedIndexes: 1                 # Indexed：超過允許失敗的 Index 數量則使 Job 失敗
+  # successPolicy:                      # Indexed：達成部分 Index 成功條件即可視為成功
+  #   rules:
+  #     - succeededCount: 2
+
+# ============================================================
+# CKAD 考試重點（只留 Job 專屬概念）
+# ============================================================
+# 1. Job → Pod；CronJob → Job → Pod。Job 成功後不會像 Deployment 持續補 Pod。
+# 2. completions=5 + parallelism=2 → 最多同時執行 2 個 Pod，直到成功 5 次。
+# 3. 失敗的 Pod 不算成功；任務應盡量設計為冪等，因為可能重複執行。
+# 4. Job 的 restartPolicy 只能 Never / OnFailure；Deployment 必須 Always。
+# 5. Job 的 spec.template.spec 是 PodSpec，但 Job 對 restartPolicy 有額外限制。
+# 6. 修改 Job 的 Pod Template 通常受不可變欄位限制；要換工作內容常需重建 Job。
+# 7. CronJob 的 jobTemplate.spec 是 JobSpec，包含 completions、parallelism 等欄位。
+# 8. activeDeadlineSeconds 是 Job 執行期限；ttlSecondsAfterFinished 是「結束後」保留時間。
+# 9. backoffLimit=0 不重試；Job 失敗可用 describe、Pod Logs、Exit Code 排查。
+#
+# 常用指令：
+# k create job <NAME> --image=busybox -- echo hello    # 快速建立 Job
+# k create job <NAME> --image=busybox --dry-run=client -o yaml
+# k get job                                           # 查看 COMPLETIONS / DURATION / AGE
+# k describe job <NAME>                               # 查看 Events、成功／失敗 Pod 數
+# k get po -l batch.kubernetes.io/job-name=<NAME>     # 查詢 Job 管理的 Pod
+# k logs job/<NAME>                                   # 查看 Job Pod 的 Logs
+# k wait --for=condition=complete job/<NAME> --timeout=120s  # 等待完成
+# k delete job <NAME>                                 # 通常連同 Pod 一起刪除
+#
+# 故障排查：
+# - Job Failed：檢查 backoffLimit、activeDeadlineSeconds、Pod Exit Code
+# - Job 無 Pod：檢查 suspend、parallelism、Events、配額
+# - Pod Pending：檢查資源、Node 排程條件、PVC
+# - ImagePullBackOff：檢查 Image、Registry、imagePullSecrets
+# - CrashLoopBackOff：OnFailure 模式下檢查 Container Logs 與退出碼
+# - Job 完成後消失：檢查 ttlSecondsAfterFinished
+# - 並行數不足：檢查 parallelism、completions、資源與排程

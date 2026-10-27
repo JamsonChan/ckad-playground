@@ -1,0 +1,70 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role                              # Namespace 範圍的 RBAC 權限規則
+metadata:
+  name: developer                       # Role 名稱
+  namespace: default                    # Role 所屬 Namespace；不在這裡指定使用者
+
+# ============================================================
+# 1. rules：一個 Role 可包含多條權限規則，權限取聯集
+# ============================================================
+rules:
+  - apiGroups: [""]                     # "" = Core API Group，例如 pods、services、configmaps、secrets
+    resources: ["pods", "services"]     # 資源名稱使用複數、小寫；不是 kind 名稱
+    verbs: ["get", "list", "watch"]      # get=單筆；list=列出；watch=持續監看
+
+  - apiGroups: [""]                     # Core API Group
+    resources: ["pods", "services"]
+    verbs: ["create", "update", "patch", "delete"]
+                                         # create=建立；update=整體更新；patch=局部修改；delete=刪除
+
+  - apiGroups: ["apps"]                 # apps API Group，例如 deployments、replicasets、statefulsets
+    resources: ["deployments"]          # 授權操作 Deployment
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # ==========================================================
+  # 2. resourceNames：只允許操作指定名稱的現有資源
+  # ==========================================================
+  - apiGroups: [""]
+    resources: ["pods"]
+    resourceNames: ["blue", "red"]       # 只針對名稱 blue / red 的 Pod 授權下列操作
+    verbs: ["get", "update", "patch", "delete"]
+                                         # 注意：本檔前面已有較廣的 pods 權限，這條不會縮小前面授予的權限
+
+  # ==========================================================
+  # 3. subresources：例如讀取 Pod Logs、進入 Container
+  # ==========================================================
+  - apiGroups: [""]
+    resources: ["pods/log"]             # k logs 所需的子資源權限
+    verbs: ["get"]
+
+  - apiGroups: [""]
+    resources: ["pods/exec"]            # k exec 所需的子資源權限
+    verbs: ["create"]                   # kubectl exec 通常需要 create pods/exec
+
+# ============================================================
+# CKAD 考試重點
+# ============================================================
+# 1. Role 只在 metadata.namespace 指定的 Namespace 生效。
+#    ClusterRole 可定義叢集層級權限，也可透過 RoleBinding 用於單一 Namespace。
+# 2. Role 只定義「允許做什麼」；RoleBinding 才把 Role / ClusterRole 綁定給
+#    User、Group 或 ServiceAccount；Role 本身沒有 subjects 欄位。
+# 3. apiGroups: [""] = Core API Group；["apps"] = Deployment 等；
+#    ["batch"] = Job / CronJob；["networking.k8s.io"] = NetworkPolicy / Ingress。
+# 4. verbs 常見：get、list、watch、create、update、patch、delete、deletecollection。
+#    ["*"] 表示所有 verbs；resources: ["*"] 表示該 API Group 所有資源。
+# 5. resourceNames 限制指定名稱的資源；無法用來限制 create 的新物件名稱。
+#    list / watch 若受 resourceNames 限制，須指定 metadata.name Field Selector。
+# 6. RBAC 權限只會累加（Allow），沒有 Deny；不同 rules 不會互相抵銷。
+# 7. pods 與 pods/log、pods/exec 是不同資源授權；只授權 pods 不等於能讀 Logs / Exec。
+# 8. ServiceAccount 的 RoleBinding subject：kind: ServiceAccount、
+#    name: <SA_NAME>、namespace: <SA_NAMESPACE>；詳細參考 RoleBinding.yaml。
+# 9. 常用指令：
+#    k get role -n <NS>                       # 查看 Namespace 中的 Role
+#    k describe role developer -n <NS>        # 查看 Role 規則
+#    k get role developer -n <NS> -o yaml     # 查看 Role YAML
+#    k create role developer --verb=get,list --resource=pods -n <NS>
+#    k auth can-i get pods -n <NS>            # 檢查目前身分的權限
+#    k auth can-i create deployments -n <NS> --as=<USER>
+#    k auth can-i get pods --resource-name=blue -n <NS> --as=<USER>
+# 10. 排查 Forbidden：檢查 Role 所屬 Namespace、RoleBinding、subject、
+#     apiGroups、resources（含子資源）、verbs，以及 resourceNames。

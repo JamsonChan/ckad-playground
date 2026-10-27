@@ -1,0 +1,105 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: quota                            # ResourceQuota 名稱
+  namespace: default                     # 只限制此 Namespace
+  labels:
+    app: resource-management
+
+spec:
+  # ============================================================
+  # 1. hard：Namespace 內各項資源的總額上限（不是即時使用量）
+  # ============================================================
+  hard:
+    requests.cpu: "4"                   # 所有計入配額的 Pod CPU Requests 總和 ≤ 4 Core
+    requests.memory: 4Gi                # Memory Requests 總和 ≤ 4Gi
+    limits.cpu: "10"                    # CPU Limits 總和 ≤ 10 Core
+    limits.memory: 10Gi                 # Memory Limits 總和 ≤ 10Gi
+
+    pods: "20"                          # 非終止狀態 Pod 數量上限（常見）
+    count/pods: "30"                    # Pod API 物件數量上限（含已完成但未刪除的 Pod）
+    count/deployments.apps: "10"        # Deployment 數量上限
+    count/jobs.batch: "10"              # Job 數量上限
+    count/cronjobs.batch: "5"           # CronJob 數量上限
+    services: "10"                      # Service 總數上限
+    services.nodeports: "5"             # NodePort Service 配額
+    configmaps: "20"                    # ConfigMap 數量上限
+    secrets: "20"                       # Secret 數量上限
+    persistentvolumeclaims: "10"        # PVC 數量上限
+    requests.storage: 100Gi             # PVC 申請的儲存容量總和上限
+
+    # 其他可能出現的配額 Key（不必全部背熟）：
+    # count/replicasets.apps: "10"       # ReplicaSet 數量
+    # count/statefulsets.apps: "5"       # StatefulSet 數量
+    # count/services: "10"              # Service 物件數量（與 services 用途相近）
+    # services.loadbalancers: "2"        # LoadBalancer Service 數量
+    # requests.ephemeral-storage: 20Gi   # 暫存空間 Requests 總和
+    # limits.ephemeral-storage: 40Gi     # 暫存空間 Limits 總和
+    # fast.storageclass.storage.k8s.io/requests.storage: 50Gi  # fast StorageClass 容量配額
+    # fast.storageclass.storage.k8s.io/persistentvolumeclaims: "5" # fast PVC 數量配額
+
+  # ============================================================
+  # 2. scopes：只計算符合特定條件的 Pod（本例選 NotTerminating）
+  # ============================================================
+  # scopes:
+  #   - NotTerminating                   # 未設定 spec.activeDeadlineSeconds 的 Pod
+  # 可選值：
+  #   Terminating    → 設定了 spec.activeDeadlineSeconds 的 Pod
+  #   NotTerminating → 未設定 spec.activeDeadlineSeconds 的 Pod
+  #   BestEffort     → QoS 為 BestEffort 的 Pod
+  #   NotBestEffort  → QoS 非 BestEffort 的 Pod
+  # 注意：scopes 與 hard 可搭配的資源種類有限制；例如 BestEffort 常搭配 pods。
+
+  # ============================================================
+  # 3. scopeSelector：依 PriorityClass 等條件篩選（進階辨識即可）
+  # ============================================================
+  # scopeSelector:
+  #   matchExpressions:
+  #     - scopeName: PriorityClass       # 依 Pod 的 PriorityClass 篩選
+  #       operator: In                   # In、NotIn、Exists、DoesNotExist
+  #       values: [high-priority]        # In / NotIn 需要 values
+  # scopeSelector 不可隨意搭配任意 hard 資源；須符合 API 限制。
+
+# ============================================================
+# CKAD 考試重點
+# ============================================================
+# 1. ResourceQuota vs LimitRange
+#   - ResourceQuota：限制整個 Namespace 的資源總額／物件數量。
+#   - LimitRange：限制單一 Container、Pod、PVC 的資源範圍，可補預設 Request/Limit。
+#   - Quota 不會自動填入 Requests / Limits；必要時搭配 LimitRange。
+#   - 多個 ResourceQuota 同時存在時，建立資源必須符合所有適用配額。
+#
+# 2. hard / used
+#   - spec.hard：配額上限；status.used：目前已計入的配額用量（由系統維護）。
+#   - Quota 計算宣告的 Requests / Limits，不是即時 CPU、Memory 使用率。
+#   - 超過上限時，新建或擴充資源可能被 API Server 拒絕（Forbidden）。
+#   - 不會因超額而主動刪除既有 Pod。
+#   - 設定 requests.cpu / limits.memory 等配額時，相關 Pod 通常需提供對應資源值。
+#
+# 3. 常考配額類型
+#   - requests.cpu / requests.memory：Pod 資源 Requests 加總。
+#   - limits.cpu / limits.memory：Pod 資源 Limits 加總。
+#   - pods：非終止狀態 Pod 數量；count/pods：Pod 物件數量。
+#   - count/deployments.apps / count/jobs.batch：特定 API 物件數量。
+#   - requests.storage：PVC 申請容量總和；persistentvolumeclaims：PVC 數量。
+#   - CPU 500m = 0.5 Core；Memory 1Gi = 1024Mi。
+#
+# 4. scopes / scopeSelector
+#   - scopes：依 Pod 的終止期限或 QoS 分類限制配額。
+#   - scopeSelector：常見用途是針對 PriorityClass 的 Pod 設定配額。
+#   - 有 scopes 時，並非所有 hard Key 都能任意搭配，考題需留意驗證錯誤。
+#
+# 5. 常用 kubectl 指令
+#   k get quota -A                         # 查看所有 Namespace 的 ResourceQuota
+#   k describe quota <NAME> -n <NS>        # 查看 Hard / Used，最實用的排查指令
+#   k get quota <NAME> -o yaml             # 查看 Spec 與 Status
+#   k create quota <NAME> --hard=pods=10,requests.cpu=4,requests.memory=4Gi
+#   k edit quota <NAME>                    # 修改配額
+#   k explain resourcequota.spec           # 查看欄位說明
+#
+# 6. 故障排查
+#   - Forbidden / exceeded quota → describe quota，比對 Used 與 Hard。
+#   - must specify requests/limits → 檢查 Pod 資源宣告與 LimitRange 預設值。
+#   - Deployment 副本不足 → describe rs / po，查看建立 Pod 的 Events。
+#   - PVC 建立或擴容失敗 → 檢查 requests.storage / persistentvolumeclaims。
+#   - Pod Pending → 通常還需檢查 Node 資源與排程；不一定是 Quota。

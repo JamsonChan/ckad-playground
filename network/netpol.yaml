@@ -1,0 +1,158 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-policy                         # NetworkPolicy 名稱
+  namespace: default                      # 只保護此 Namespace 內的 Pod
+  labels:
+    app: database                         # Policy 自身 Label，不影響流量選取
+
+spec:
+  # ============================================================
+  # 1. Pod Selector：選擇被保護的 Pod
+  # ============================================================
+  podSelector:
+    matchLabels:
+      role: db                            # 只選本 Namespace 中 role=db 的 Pod
+    # matchExpressions:                  # 進階 Label 選取；詳見 Pod/Deployment 的 Selector 筆記
+    #   - key: environment
+    #     operator: In                    # In、NotIn、Exists、DoesNotExist
+    #     values: [production]
+  # podSelector: {}                       # 改成空物件時，選取本 Namespace 所有 Pod
+
+  # ============================================================
+  # 2. Policy Types：要限制的流量方向
+  # ============================================================
+  policyTypes:
+    - Ingress                             # 限制流入被選中 Pod 的連線
+    - Egress                              # 限制被選中 Pod 發出的連線
+  # 可只保留 Ingress 或 Egress；兩者都列出則雙向隔離
+  # 未指定時，預設包含 Ingress；若有 egress 規則則也包含 Egress
+
+  # ============================================================
+  # 3. Ingress：允許進入資料庫 Pod 的流量
+  # ============================================================
+  ingress:
+    - from:                               # 來源列表：不同項目彼此 OR
+        - podSelector:
+            matchLabels:
+              role: frontend             # 來源 Pod 必須是 frontend
+          namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: frontend-ns
+                                          # 同一項目兩種 selector → AND
+                                          # 即 frontend-ns 裡 role=frontend 的 Pod
+        - ipBlock:
+            cidr: 10.0.0.0/24            # 另一種允許來源：指定 IP 網段
+            except:
+              - 10.0.0.5/32              # 排除 CIDR 內的一個 IP
+      ports:
+        - protocol: TCP                   # TCP（預設）、UDP、SCTP
+          port: 3306                      # 目標 Pod 接收流量的 Port；亦可用具名 Port
+
+  # ============================================================
+  # 4. Egress：允許資料庫 Pod 發出的流量
+  # ============================================================
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              role: backend              # 目的 Pod Label
+          namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: backend-ns
+                                          # 同一 peer：Namespace 與 Pod 條件 AND
+        - ipBlock:
+            cidr: 192.168.10.0/24        # 另一個可連線的目的地（OR）
+            except:
+              - 192.168.10.5/32
+      ports:
+        - protocol: TCP
+          port: 443                       # 目的地 Port
+
+    # DNS 常見考題：限制 Egress 後，通常要另外放行 DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns          # DNS Pod Label 依實際 Cluster 調整
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+  # ============================================================
+  # 5. 其他重要語法（互斥情境，以註解保留）
+  # ============================================================
+  # ingress: []                           # Ingress 預設拒絕（前提：policyTypes 含 Ingress）
+  # egress: []                            # Egress 預設拒絕（前提：policyTypes 含 Egress）
+  # ingress: [{}]                         # 允許所有來源、所有 Port 的 Ingress
+  # egress: [{}]                          # 允許所有目的地、所有 Port 的 Egress
+  # ingress:
+  #   - from:
+  #       - podSelector: {}               # 本 Namespace 所有 Pod
+  #       - namespaceSelector: {}         # 所有 Namespace 的所有 Pod（OR）
+  #     ports:
+  #       - protocol: TCP
+  #         port: 8000
+  #         endPort: 8010                 # 允許 TCP 8000～8010；port 必須是數字
+  # 不寫 from/to：該條規則不限來源/目的地
+  # 不寫 ports：該條規則不限 Port
+  # 同一 peer 的 podSelector + namespaceSelector 是 AND
+  # 分開成兩個 peer 則是 OR；縮排會直接改變允許範圍！
+
+# ============================================================
+# CKAD 考試重點
+# ============================================================
+# 1. 基本觀念
+#   - NetworkPolicy 只選取所在 Namespace 的目標 Pod；不直接套用 Service
+#   - 需要 CNI 支援 NetworkPolicy，規則才會實際生效
+#   - 預設 Pod 流量全允許；被某方向的 Policy 選中後，該方向才受限制
+#   - 標準 NetworkPolicy 是 Allow List，沒有明確的 Deny 規則
+#   - 多個 Policy 的允許規則取聯集（OR），不能靠 Deny All 覆蓋其他 Allow
+#   - Pod A 連到 Pod B：A 的 Egress 和 B 的 Ingress 都必須允許
+#   - 已允許連線的回應流量通常不需另外建立反向規則
+#
+# 2. Selector / AND / OR（最常考）
+#   - spec.podSelector：選擇被保護 Pod；{} 代表本 Namespace 全部 Pod
+#   - from/to 中只有 podSelector：Policy 所在 Namespace 的 Pod
+#   - from/to 中只有 namespaceSelector：符合 Namespace Label 的所有 Pod
+#   - 同一 peer 中 podSelector + namespaceSelector：AND
+#   - 不同 peer、不同 ingress/egress 規則：OR
+#   - 同一條規則的不同 ports：OR；多個 matchLabels：AND
+#   - namespaceSelector: {}：所有 Namespace；可再搭配 podSelector 縮小範圍
+#
+# 3. 規則的空值差異
+#   - ingress: [] / egress: []：該方向不新增任何允許規則（Default Deny）
+#   - ingress: [{}] / egress: [{}]：該方向允許所有流量
+#   - 單條 ingress 不寫 from：允許所有來源；不寫 ports：允許所有 Port
+#   - 單條 egress 不寫 to：允許所有目的地；不寫 ports：允許所有 Port
+#   - policyTypes 必須包含欲隔離的方向，不能只寫 egress: [] 卻只指定 Ingress
+#
+# 4. Port / IPBlock / DNS
+#   - ingress.ports.port：目標 Pod Port；egress.ports.port：目的地 Port
+#   - protocol：TCP（預設）、UDP、SCTP
+#   - endPort：連續 Port 範圍的終點，必須 >= 數字 port
+#   - ipBlock.cidr：IP/CIDR；except 必須是 cidr 內的子網段
+#   - ipBlock 常用於外部 IP；Pod/Service IP 的 NAT 行為可能因 CNI 而異
+#   - 限制 Egress 常會阻擋 DNS；通常需允許 UDP/TCP 53
+#   - DNS Namespace/Pod Label 先用 kubectl 查詢，不要硬背範例 Label
+#
+# 5. 常用指令
+#   - k get netpol -A                      # 所有 Namespace 的 NetworkPolicy
+#   - k describe netpol <NAME>             # 查看選取器及允許規則
+#   - k get netpol <NAME> -o yaml          # 查看完整 YAML
+#   - k get po --show-labels               # 核對 Pod Label
+#   - k get ns --show-labels               # 核對 Namespace Label
+#   - k label ns <NS> name=<VALUE>         # 加上 Namespace Label
+#   - k explain netpol.spec                # 查詢欄位結構
+#   - k apply -f networkpolicy.yaml        # 建立／更新規則
+#
+# 6. 故障排查
+#   - Policy 沒效果：CNI 是否支援、podSelector 是否選到 Pod、方向是否正確
+#   - Pod 無法連線：同時檢查來源 Egress、目的 Ingress、Port/Protocol
+#   - 跨 Namespace 不通：核對 Namespace Label 與 peer 的 AND/OR 縮排
+#   - DNS 不通：檢查 Egress DNS 例外及實際 DNS Pod Label
+#   - Service 不通：先檢查 Service EndpointSlice，再檢查 NetworkPolicy

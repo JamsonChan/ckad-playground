@@ -1,0 +1,199 @@
+apiVersion: v1
+kind: Config
+
+# ============================================================
+# 1. Current Context
+# ============================================================
+current-context: dev-context              # kubectl 目前使用的 Context
+
+# ============================================================
+# 2. Clusters：定義 Kubernetes Cluster 的連線資訊
+# ============================================================
+clusters:
+  - name: dev-cluster                     # Cluster 名稱（自行命名）
+    cluster:
+      server: https://192.168.1.100:6443  # Kubernetes API Server 位址
+      certificate-authority: /path/ca.crt # CA 憑證檔案路徑
+
+      # certificate-authority-data: <BASE64_CA_CERT>
+                                           # 直接嵌入 Base64 CA 憑證
+      # insecure-skip-tls-verify: true     # 略過 TLS 憑證驗證（不建議）
+
+  - name: prod-cluster
+    cluster:
+      server: https://192.168.1.200:6443
+      certificate-authority: /path/prod-ca.crt
+
+# ============================================================
+# 3. Users：定義連線 Kubernetes 的認證身分
+# ============================================================
+users:
+  - name: dev-user                        # User 名稱（自行命名）
+    user:
+      client-certificate: /path/client.crt # Client 憑證
+      client-key: /path/client.key          # Client 私鑰
+
+      # client-certificate-data: <BASE64_CERT>
+      # client-key-data: <BASE64_KEY>
+                                           # 直接嵌入憑證與私鑰
+
+      # token: <TOKEN>                     # Bearer Token 認證
+
+      # username: admin                    # Basic Auth（舊式，不建議）
+      # password: password
+
+      # exec:                              # 透過外部程式取得認證資訊
+      #   apiVersion: client.authentication.k8s.io/v1
+      #   command: example-auth-plugin
+      #   interactiveMode: Never
+
+  - name: prod-user
+    user:
+      token: <PROD_TOKEN>
+
+# ============================================================
+# 4. Contexts：組合 Cluster + User + Namespace
+# ============================================================
+contexts:
+  - name: dev-context                     # Context 名稱（自行命名）
+    context:
+      cluster: dev-cluster                # 對應 clusters[].name
+      user: dev-user                      # 對應 users[].name
+      namespace: development              # 預設操作的 Namespace
+
+  - name: prod-context
+    context:
+      cluster: prod-cluster
+      user: prod-user
+      namespace: production
+
+# ============================================================
+# 5. Preferences（選用）
+# ============================================================
+preferences: {}
+
+
+# ============================================================
+# CKAD 考試重點
+# ============================================================
+
+# 1. kubeconfig 基本觀念
+#   - kubeconfig 是 kubectl 的連線設定檔
+#   - 預設位置為 ~/.kube/config
+#   - kubeconfig 不是 Kubernetes API Resource
+#   - 不使用 kubectl apply -f 建立 kubeconfig
+#   - kubeconfig 可以包含多個 Cluster、User、Context
+#   - kubectl 根據 current-context 決定預設操作環境
+#   - Context = Cluster + User + Namespace
+#   - Context 名稱、Cluster 名稱、User 名稱可以不同
+#   - kubeconfig 的 users 名稱不等於 Kubernetes RBAC 的 User 物件
+#   - kubeconfig 不會直接賦予 Kubernetes 操作權限
+#   - 實際權限仍由認證身分與 RBAC 等授權機制決定
+
+# 2. Clusters
+#   - clusters 定義 Kubernetes API Server 的連線資訊
+#   - name：Cluster 的本地識別名稱
+#   - server：Kubernetes API Server URL
+#   - certificate-authority：CA 憑證檔案路徑
+#   - certificate-authority-data：Base64 編碼的 CA 憑證
+#   - insecure-skip-tls-verify：略過 TLS 驗證，不建議使用
+#   - Cluster 名稱不一定等於實際 Cluster 的名稱
+
+# 3. Users
+#   - users 定義 kubectl 連線時使用的認證資訊
+#   - client-certificate：Client 憑證
+#   - client-key：Client 私鑰
+#   - token：Bearer Token
+#   - exec：執行外部認證程式取得憑證
+#   - User 名稱只是 kubeconfig 內的識別名稱
+#   - User 不代表 Kubernetes 中存在同名的 User 資源
+#   - 修改 kubeconfig 的 User 名稱不會改變實際 RBAC 權限
+
+# 4. Contexts
+#   - contexts 用來組合 Cluster、User、Namespace
+#   - cluster：指定連線哪個 Cluster
+#   - user：指定使用哪個認證身分
+#   - namespace：指定預設操作的 Namespace
+#   - Namespace 沒有設定時，kubectl 通常使用 default
+#   - 一個 Cluster 可以有多個 Context
+#   - 多個 Context 可以使用相同 Cluster，但不同 User
+#   - 多個 Context 可以使用相同 Cluster、User，但不同 Namespace
+
+# 5. Current Context
+#   - current-context 決定 kubectl 預設使用哪個 Context
+#   - kubectl config use-context 可切換 current-context
+#   - 切換 Context 可能同時切換 Cluster、User、Namespace
+#   - CKAD 考試每題可能指定不同 Context
+#   - 每題開始前務必確認題目要求的 Context
+
+# 6. Namespace
+#   - Context 可以指定預設 Namespace
+#   - kubectl -n <NAMESPACE> 可覆蓋 Context 的預設 Namespace
+#   - kubectl -A 可查詢所有 Namespace（適用支援的查詢指令）
+#   - kubectl config set-context --current --namespace=<NS>
+#     可以修改目前 Context 的預設 Namespace
+#   - Namespace 不等於 Cluster
+#   - 切換 Namespace 不代表切換 Cluster
+
+# 7. kubeconfig 檔案位置
+#   - 預設讀取 ~/.kube/config
+#   - KUBECONFIG 環境變數可以指定其他 kubeconfig
+#   - --kubeconfig 可以為單次 kubectl 指令指定設定檔
+#   - KUBECONFIG 可包含多個檔案
+#   - Linux / macOS 使用冒號 : 分隔多個 KUBECONFIG 檔案
+#   - Windows 使用分號 ; 分隔多個 KUBECONFIG 檔案
+#   - kubectl config view 可查看合併後的設定
+
+# 8. 查看 Context
+#   - k config get-contexts                 # 列出所有 Context
+#   - k config current-context              # 查看目前 Context
+#   - k config use-context <CONTEXT>        # 切換 Context
+#   - k config view                         # 查看 kubeconfig
+#   - k config view --minify                # 只查看目前 Context 相關設定
+#   - k config view -o jsonpath='{.current-context}'
+#                                          # 只輸出目前 Context 名稱
+
+# 9. 修改 Context
+#   - k config set-context --current --namespace=<NS>
+#                                          # 修改目前 Context 的 Namespace
+#   - k config set-context <CONTEXT> --namespace=<NS>
+#                                          # 修改指定 Context 的 Namespace
+#   - k config set-context <CONTEXT> --cluster=<CLUSTER> --user=<USER>
+#                                          # 設定 Context 的 Cluster / User
+#   - k config rename-context <OLD> <NEW>   # 重新命名 Context
+#   - k config delete-context <CONTEXT>     # 刪除 Context
+
+# 10. 查看 Cluster / User
+#   - k config get-clusters                 # 列出 Cluster 名稱
+#   - k config get-users                    # 列出 User 名稱
+#   - k config view --raw                   # 顯示未遮蔽的認證資訊（敏感）
+#   - k config view --flatten               # 將憑證檔案內容嵌入設定
+
+# 11. 單次指令覆蓋 Context / Namespace
+#   - k --context=<CONTEXT> get pods
+#                                          # 只對這次指令指定 Context
+#   - k -n <NAMESPACE> get pods             # 只對這次指令指定 Namespace
+#   - k --context=<CONTEXT> -n <NS> get pods
+#                                          # 同時指定 Context 與 Namespace
+#   - k --kubeconfig=<FILE> get pods        # 使用指定 kubeconfig
+
+# 12. RBAC / 權限
+#   - kubeconfig 負責認證設定，不負責授權規則
+#   - Kubernetes RBAC 透過 Role / ClusterRole 定義權限
+#   - RoleBinding / ClusterRoleBinding 綁定使用者與權限
+#   - Context 切換 User 後，可能擁有不同操作權限
+#   - k auth can-i get pods                 # 檢查目前身分能否查看 Pod
+#   - k auth can-i create deployments       # 檢查能否建立 Deployment
+#   - k auth can-i --list                   # 列出目前身分的權限資訊
+
+# 13. CKAD 常見故障排查
+#   - kubectl 連到錯誤 Cluster → 檢查 current-context
+#   - 找不到 Pod → 檢查 Context 與 Namespace
+#   - Unauthorized → 檢查 Token / Client Certificate
+#   - Forbidden → 檢查 RBAC 權限
+#   - TLS Certificate Error → 檢查 CA 憑證與 API Server
+#   - Connection Refused → 檢查 API Server 位址與連線狀態
+#   - Context 不存在 → 使用 k config get-contexts 確認
+#   - User 不存在 → 檢查 contexts[].context.user
+#   - Cluster 不存在 → 檢查 contexts[].context.cluster
+#   - kubeconfig 包含憑證與 Token → 不應公開或提交到 Git
